@@ -369,8 +369,8 @@ bool SQLiteDB::ColumnExists(const string &table_name, const string &column_name)
 
 string SQLiteDB::GetRowIdName(const string &table_name) {
 	auto escaped_table_name = SQLiteUtils::SanitizeString(table_name);
-	auto stmt = Prepare(StringUtil::Format("SELECT wr FROM pragma_table_list('%s')", escaped_table_name));
-	if (stmt.Step() && stmt.GetValue<int>(0)) {
+	auto stmt = Prepare(StringUtil::Format("PRAGMA table_list('%s')", escaped_table_name));
+	if (stmt.Step() && stmt.GetValue<int>(4)) {
 		// a WITHOUT ROWID table
 		return string();
 	}
@@ -386,26 +386,26 @@ string SQLiteDB::GetRowIdName(const string &table_name) {
 			primary_key_type = stmt.GetValue<string>(2);
 		}
 	}
-	// an INTEGER PRIMARY KEY is the row id, unless it is DESC, which gives it an index of its own
-	string row_id_column;
-	if (primary_key.size() == 1 && StringUtil::CIEquals(primary_key_type, "INTEGER")) {
-		stmt = Prepare(
-		    StringUtil::Format("SELECT count(*) FROM pragma_index_list('%s') WHERE origin = 'pk'", escaped_table_name));
-		if (stmt.Step() && stmt.GetValue<int>(0) == 0) {
-			row_id_column = primary_key[0];
+	// an INTEGER PRIMARY KEY is the row id, unless it is declared DESC inline, which gives it an index of its own
+	bool has_row_id_column = primary_key.size() == 1 && StringUtil::CIEquals(primary_key_type, "INTEGER");
+	if (has_row_id_column) {
+		stmt = Prepare(StringUtil::Format("PRAGMA index_list('%s')", escaped_table_name));
+		while (stmt.Step()) {
+			has_row_id_column = has_row_id_column && stmt.GetValue<string>(3) != "pk";
 		}
 	}
 	for (auto name : {"rowid", "oid", "_rowid_"}) {
 		bool taken = false;
 		for (auto &column_name : column_names) {
-			taken = taken || (StringUtil::CIEquals(column_name, name) && column_name != row_id_column);
+			bool is_row_id = has_row_id_column && column_name == primary_key[0];
+			taken = taken || (StringUtil::CIEquals(column_name, name) && !is_row_id);
 		}
 		if (!taken) {
 			return name;
 		}
 	}
-	if (!row_id_column.empty()) {
-		return SQLiteUtils::WriteQuotedAndEscaped(row_id_column, '"');
+	if (has_row_id_column) {
+		return SQLiteUtils::WriteQuotedAndEscaped(primary_key[0], '"');
 	}
 	return string();
 }

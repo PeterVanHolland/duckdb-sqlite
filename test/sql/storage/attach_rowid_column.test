@@ -148,6 +148,50 @@ SELECT id FROM s1.i
 ----
 2
 
+# an INTEGER PRIMARY KEY with an empty name
+query I
+FROM sqlite_query(s1, 'CREATE TABLE e("" INTEGER PRIMARY KEY, "rowid" INTEGER, oid INTEGER, _rowid_ INTEGER)')
+----
+0
+
+query I
+FROM sqlite_query(s1, 'INSERT INTO e VALUES (1, 9, 9, 9), (2, 8, 8, 8)')
+----
+2
+
+query I
+DELETE FROM s1.e WHERE oid = 9
+----
+1
+
+query I
+SELECT oid FROM s1.e
+----
+8
+
+# tables named like the pragma functions do not change the row id name
+statement ok
+CREATE TABLE s1.pragma_table_list(a INTEGER)
+
+statement ok
+CREATE TABLE s1.pragma_index_list(a INTEGER)
+
+statement ok
+CREATE TABLE s1.p(id INTEGER PRIMARY KEY, a INTEGER)
+
+statement ok
+INSERT INTO s1.p VALUES (1, 1), (2, 2)
+
+query I
+DELETE FROM s1.p WHERE a = 1
+----
+1
+
+query I
+SELECT count(*) FROM s1.p
+----
+1
+
 # a WITHOUT ROWID table has no row id
 query I
 FROM sqlite_query(s1, 'CREATE TABLE n("rowid" INT PRIMARY KEY, a INTEGER) WITHOUT ROWID')
