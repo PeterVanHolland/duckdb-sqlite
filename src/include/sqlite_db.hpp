@@ -54,7 +54,7 @@ public:
 	idx_t RunPragma(string pragma_name);
 	//! Gets the max row id of a table, returns false if the table does not have a
 	//! rowid column
-	bool GetRowIdInfo(const string &table_name, RowIdInfo &info);
+	bool GetRowIdInfo(const string &table_name, const string &row_id_name, RowIdInfo &info);
 	bool ColumnExists(const string &table_name, const string &column_name);
 	vector<IndexInfo> GetIndexInfo(const string &table_name);
 

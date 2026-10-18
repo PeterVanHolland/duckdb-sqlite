@@ -1,0 +1,88 @@
+# name: test/sql/storage/attach_rowid_column.test
+# description: Scans, deletes and updates use the row id of a table that has a column named rowid
+# group: [storage]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/attach_rowid_column.db' AS s1 (TYPE SQLITE)
+
+statement ok
+CREATE TABLE s1.t(a INTEGER, "rowid" INTEGER);
+
+statement ok
+INSERT INTO s1.t VALUES (1, 5), (2, 5), (3, NULL);
+
+query I
+DELETE FROM s1.t WHERE a = 1
+----
+1
+
+query II
+SELECT a, rowid FROM s1.t ORDER BY a
+----
+2	5
+3	NULL
+
+query I
+UPDATE s1.t SET a = 30 WHERE a = 3
+----
+1
+
+query II
+SELECT a, rowid FROM s1.t ORDER BY a
+----
+2	5
+30	NULL
+
+# a scan in ranges of the row id
+statement ok
+CREATE TABLE s1.r(a INTEGER, "rowid" INTEGER);
+
+statement ok
+INSERT INTO s1.r VALUES (1, 10), (2, 20), (3, NULL), (4, 1000);
+
+query II
+SELECT count(*), sum(a) FROM s1.r
+----
+4	10
+
+# with columns named rowid and oid, in any case, the row id is _rowid_
+statement ok
+CREATE TABLE s1.u(a INTEGER, "RowId" INTEGER, "OID" INTEGER);
+
+statement ok
+INSERT INTO s1.u VALUES (1, 7, 7), (2, 7, 7);
+
+query I
+DELETE FROM s1.u WHERE a = 1
+----
+1
+
+query I
+SELECT a FROM s1.u
+----
+2
+
+# with all three names taken, the rows cannot be addressed
+statement ok
+CREATE TABLE s1.all_names(a INTEGER, "rowid" INTEGER, "oid" INTEGER, "_rowid_" INTEGER);
+
+statement ok
+INSERT INTO s1.all_names VALUES (1, 1, 1, 1), (2, 1, 1, 1);
+
+statement error
+DELETE FROM s1.all_names WHERE a = 1
+----
+Table "all_names" has columns named rowid, oid and _rowid_, so its rows cannot be deleted or updated
+
+statement error
+UPDATE s1.all_names SET a = 3 WHERE a = 1
+----
+Table "all_names" has columns named rowid, oid and _rowid_, so its rows cannot be deleted or updated
+
+query I
+SELECT a FROM s1.all_names ORDER BY a
+----
+1
+2

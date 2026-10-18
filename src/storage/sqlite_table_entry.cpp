@@ -25,12 +25,21 @@ void SQLiteTableEntry::BindUpdateConstraints(Binder &, LogicalGet &, LogicalProj
                                              ClientContext &) {
 }
 
+string SQLiteTableEntry::GetRowIdName() const {
+	vector<string> column_names;
+	for (auto &col : columns.Logical()) {
+		column_names.emplace_back(col.GetName().GetIdentifierName());
+	}
+	return SQLiteUtils::RowIdName(column_names);
+}
+
 TableFunction SQLiteTableEntry::GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) {
 	auto result = make_uniq<SqliteBindData>();
 	for (auto &col : columns.Logical()) {
 		result->names.emplace_back(col.GetName().GetIdentifierName());
 		result->types.push_back(col.GetType());
 	}
+	result->row_id_name = SQLiteUtils::RowIdName(result->names);
 	auto &sqlite_catalog = catalog.Cast<SQLiteCatalog>();
 	result->file_name = sqlite_catalog.path;
 	result->table_name = name.GetIdentifierName();
@@ -39,7 +48,7 @@ TableFunction SQLiteTableEntry::GetScanFunction(ClientContext &context, unique_p
 	auto &transaction = Transaction::Get(context, catalog).Cast<SQLiteTransaction>();
 	auto &db = transaction.GetDB();
 
-	if (!db.GetRowIdInfo(name.GetIdentifierName(), result->row_id_info)) {
+	if (!db.GetRowIdInfo(name.GetIdentifierName(), result->row_id_name, result->row_id_info)) {
 		result->rows_per_group = optional_idx();
 	}
 
@@ -76,7 +85,7 @@ TableStorageInfo SQLiteTableEntry::GetStorageInfo(ClientContext &context) {
 	TableStorageInfo result;
 
 	RowIdInfo info;
-	if (!db.GetRowIdInfo(name.GetIdentifierName(), info)) {
+	if (!db.GetRowIdInfo(name.GetIdentifierName(), GetRowIdName(), info)) {
 		// probably
 		result.cardinality = 10000;
 	} else {

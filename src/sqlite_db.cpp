@@ -367,11 +367,14 @@ bool SQLiteDB::ColumnExists(const string &table_name, const string &column_name)
 	return false;
 }
 
-bool SQLiteDB::GetRowIdInfo(const string &table_name, RowIdInfo &row_id_info) {
+bool SQLiteDB::GetRowIdInfo(const string &table_name, const string &row_id_name, RowIdInfo &row_id_info) {
+	if (row_id_name.empty()) {
+		return false;
+	}
 	SQLiteStatement stmt;
 	auto sanitized_table_name = SQLiteUtils::SanitizeIdentifier(table_name);
-	if (!TryPrepare(StringUtil::Format("SELECT (SELECT MIN(ROWID) FROM \"%s\"), (SELECT MAX(ROWID) FROM \"%s\")",
-	                                   sanitized_table_name, sanitized_table_name),
+	if (!TryPrepare(StringUtil::Format("SELECT (SELECT MIN(%s) FROM \"%s\"), (SELECT MAX(%s) FROM \"%s\")", row_id_name,
+	                                   sanitized_table_name, row_id_name, sanitized_table_name),
 	                stmt)) {
 		return false;
 	}

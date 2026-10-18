@@ -33,6 +33,27 @@ string SQLiteUtils::SanitizeString(const string &table_name) {
 	return StringUtil::Replace(table_name, "'", "''");
 }
 
+string SQLiteUtils::RowIdName(const vector<string> &column_names) {
+	for (auto name : {"rowid", "oid", "_rowid_"}) {
+		bool taken = false;
+		for (auto &column_name : column_names) {
+			taken = taken || StringUtil::CIEquals(column_name, name);
+		}
+		if (!taken) {
+			return name;
+		}
+	}
+	return string();
+}
+
+void SQLiteUtils::CheckRowIdName(const string &row_id_name, const string &table_name) {
+	if (row_id_name.empty()) {
+		throw NotImplementedException("Table \"%s\" has columns named rowid, oid and _rowid_, so its rows cannot be "
+		                              "deleted or updated",
+		                              table_name);
+	}
+}
+
 string SQLiteUtils::SanitizeIdentifier(const string &table_name) {
 	return StringUtil::Replace(table_name, "\"", "\"\"");
 }

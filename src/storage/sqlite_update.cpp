@@ -28,6 +28,8 @@ public:
 };
 
 string GetUpdateSQL(SQLiteTableEntry &table, const vector<PhysicalIndex> &index) {
+	auto row_id_name = table.GetRowIdName();
+	SQLiteUtils::CheckRowIdName(row_id_name, table.name.GetIdentifierName());
 	string result;
 	result = "UPDATE " + SQLiteUtils::WriteOptionallyQuoted(table.name.GetIdentifierName());
 	result += " SET ";
@@ -39,7 +41,7 @@ string GetUpdateSQL(SQLiteTableEntry &table, const vector<PhysicalIndex> &index)
 		result += SQLiteUtils::WriteOptionallyQuoted(col.GetName().GetIdentifierName());
 		result += " = ?";
 	}
-	result += " WHERE rowid = ?";
+	result += " WHERE " + row_id_name + " = ?";
 	return result;
 }
 
