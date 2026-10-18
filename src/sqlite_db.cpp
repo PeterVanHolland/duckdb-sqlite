@@ -368,8 +368,14 @@ bool SQLiteDB::ColumnExists(const string &table_name, const string &column_name)
 }
 
 string SQLiteDB::GetRowIdName(const string &table_name) {
+	auto escaped_table_name = SQLiteUtils::SanitizeString(table_name);
+	auto stmt = Prepare(StringUtil::Format("SELECT wr FROM pragma_table_list('%s')", escaped_table_name));
+	if (stmt.Step() && stmt.GetValue<int>(0)) {
+		// a WITHOUT ROWID table
+		return string();
+	}
 	// table_xinfo also lists the generated columns, which take these names too
-	auto stmt = Prepare(StringUtil::Format("PRAGMA table_xinfo('%s')", SQLiteUtils::SanitizeString(table_name)));
+	stmt = Prepare(StringUtil::Format("PRAGMA table_xinfo('%s')", escaped_table_name));
 	vector<string> column_names;
 	vector<string> primary_key;
 	string primary_key_type;
@@ -380,17 +386,26 @@ string SQLiteDB::GetRowIdName(const string &table_name) {
 			primary_key_type = stmt.GetValue<string>(2);
 		}
 	}
-	// a column that is the INTEGER PRIMARY KEY refers to the row id itself
-	bool integer_primary_key = primary_key.size() == 1 && StringUtil::CIEquals(primary_key_type, "INTEGER");
+	// an INTEGER PRIMARY KEY is the row id, unless it is DESC, which gives it an index of its own
+	string row_id_column;
+	if (primary_key.size() == 1 && StringUtil::CIEquals(primary_key_type, "INTEGER")) {
+		stmt = Prepare(
+		    StringUtil::Format("SELECT count(*) FROM pragma_index_list('%s') WHERE origin = 'pk'", escaped_table_name));
+		if (stmt.Step() && stmt.GetValue<int>(0) == 0) {
+			row_id_column = primary_key[0];
+		}
+	}
 	for (auto name : {"rowid", "oid", "_rowid_"}) {
 		bool taken = false;
 		for (auto &column_name : column_names) {
-			bool is_row_id = integer_primary_key && column_name == primary_key[0];
-			taken = taken || (StringUtil::CIEquals(column_name, name) && !is_row_id);
+			taken = taken || (StringUtil::CIEquals(column_name, name) && column_name != row_id_column);
 		}
 		if (!taken) {
 			return name;
 		}
+	}
+	if (!row_id_column.empty()) {
+		return SQLiteUtils::WriteQuotedAndEscaped(row_id_column, '"');
 	}
 	return string();
 }

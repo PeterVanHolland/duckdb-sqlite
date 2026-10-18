@@ -55,7 +55,7 @@ public:
 	//! Gets the max row id of a table, returns false if the table does not have a
 	//! rowid column
 	bool GetRowIdInfo(const string &table_name, const string &row_id_name, RowIdInfo &info);
-	//! The name that refers to the row id of a table, empty when its columns take every such name
+	//! The name that refers to the row id of a table, empty when it has none
 	string GetRowIdName(const string &table_name);
 	bool ColumnExists(const string &table_name, const string &column_name);
 	vector<IndexInfo> GetIndexInfo(const string &table_name);

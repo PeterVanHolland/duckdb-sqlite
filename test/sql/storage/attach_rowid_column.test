@@ -105,6 +105,68 @@ SELECT rowid, oid FROM s1.k ORDER BY rowid
 1	7
 2	8
 
+# an INTEGER PRIMARY KEY DESC is not the row id
+query I
+FROM sqlite_query(s1, 'CREATE TABLE d(a INTEGER, "rowid" INTEGER, oid INTEGER PRIMARY KEY DESC)')
+----
+0
+
+query I
+FROM sqlite_query(s1, 'INSERT INTO d VALUES (1, 1, 10), (2, 2, NULL), (3, 3, NULL), (4, 4, 0)')
+----
+4
+
+query I
+UPDATE s1.d SET a = 20 WHERE a = 2
+----
+1
+
+query II
+SELECT a, oid FROM s1.d ORDER BY "rowid"
+----
+1	10
+20	NULL
+3	NULL
+4	0
+
+# with all three names taken, an INTEGER PRIMARY KEY of another name is the row id
+query I
+FROM sqlite_query(s1, 'CREATE TABLE i(id INTEGER PRIMARY KEY, "rowid" INTEGER, oid INTEGER, _rowid_ INTEGER)')
+----
+0
+
+statement ok
+INSERT INTO s1.i VALUES (1, 9, 9, 9), (2, 9, 9, 9)
+
+query I
+DELETE FROM s1.i WHERE id = 1
+----
+1
+
+query I
+SELECT id FROM s1.i
+----
+2
+
+# a WITHOUT ROWID table has no row id
+query I
+FROM sqlite_query(s1, 'CREATE TABLE n("rowid" INT PRIMARY KEY, a INTEGER) WITHOUT ROWID')
+----
+0
+
+statement ok
+INSERT INTO s1.n VALUES (1, 1), (2, 2)
+
+query I
+SELECT count(*) FROM s1.n
+----
+2
+
+statement error
+DELETE FROM s1.n WHERE a = 1
+----
+The rows of table "n" cannot be deleted or updated, because SQLite has no name for its row id
+
 # with all three names taken, the rows cannot be addressed
 statement ok
 CREATE TABLE s1.all_names(a INTEGER, "rowid" INTEGER, "oid" INTEGER, "_rowid_" INTEGER);
@@ -115,12 +177,12 @@ INSERT INTO s1.all_names VALUES (1, 1, 1, 1), (2, 1, 1, 1);
 statement error
 DELETE FROM s1.all_names WHERE a = 1
 ----
-Table "all_names" has columns named rowid, oid and _rowid_, so its rows cannot be deleted or updated
+The rows of table "all_names" cannot be deleted or updated, because SQLite has no name for its row id
 
 statement error
 UPDATE s1.all_names SET a = 3 WHERE a = 1
 ----
-Table "all_names" has columns named rowid, oid and _rowid_, so its rows cannot be deleted or updated
+The rows of table "all_names" cannot be deleted or updated, because SQLite has no name for its row id
 
 query I
 SELECT a FROM s1.all_names ORDER BY a

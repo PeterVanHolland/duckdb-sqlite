@@ -35,8 +35,8 @@ string SQLiteUtils::SanitizeString(const string &table_name) {
 
 void SQLiteUtils::CheckRowIdName(const string &row_id_name, const string &table_name) {
 	if (row_id_name.empty()) {
-		throw NotImplementedException("Table \"%s\" has columns named rowid, oid and _rowid_, so its rows cannot be "
-		                              "deleted or updated",
+		throw NotImplementedException("The rows of table \"%s\" cannot be deleted or updated, because SQLite has no "
+		                              "name for its row id",
 		                              table_name);
 	}
 }
