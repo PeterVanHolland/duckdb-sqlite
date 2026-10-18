@@ -209,7 +209,25 @@ SELECT count(*) FROM s1.n
 statement error
 DELETE FROM s1.n WHERE a = 1
 ----
-The rows of table "n" cannot be deleted or updated, because SQLite has no name for its row id
+SQLite has no name for the row id of table "n"
+
+query I
+FROM sqlite_query(s1, 'CREATE TABLE w(k INT PRIMARY KEY, a INTEGER) WITHOUT ROWID')
+----
+0
+
+statement ok
+INSERT INTO s1.w VALUES (1, 1), (2, 2)
+
+query I
+SELECT count(*) FROM s1.w
+----
+2
+
+statement error
+SELECT rowid FROM s1.w
+----
+SQLite has no name for the row id of table "w"
 
 # with all three names taken, the rows cannot be addressed
 statement ok
@@ -221,12 +239,12 @@ INSERT INTO s1.all_names VALUES (1, 1, 1, 1), (2, 1, 1, 1);
 statement error
 DELETE FROM s1.all_names WHERE a = 1
 ----
-The rows of table "all_names" cannot be deleted or updated, because SQLite has no name for its row id
+SQLite has no name for the row id of table "all_names"
 
 statement error
 UPDATE s1.all_names SET a = 3 WHERE a = 1
 ----
-The rows of table "all_names" cannot be deleted or updated, because SQLite has no name for its row id
+SQLite has no name for the row id of table "all_names"
 
 query I
 SELECT a FROM s1.all_names ORDER BY a

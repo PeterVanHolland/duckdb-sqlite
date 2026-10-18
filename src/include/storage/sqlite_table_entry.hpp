@@ -29,6 +29,8 @@ public:
 
 	TableStorageInfo GetStorageInfo(ClientContext &context) override;
 
+	virtual_column_map_t GetVirtualColumns() const override;
+
 	void BindUpdateConstraints(Binder &binder, LogicalGet &get, LogicalProjection &proj, LogicalUpdate &update,
 	                           ClientContext &context) override;
 

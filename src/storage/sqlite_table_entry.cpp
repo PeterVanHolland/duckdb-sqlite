@@ -71,6 +71,13 @@ TableFunction SQLiteTableEntry::GetScanFunction(ClientContext &context, unique_p
 	return static_cast<TableFunction>(SqliteScanFunction());
 }
 
+virtual_column_map_t SQLiteTableEntry::GetVirtualColumns() const {
+	auto result = TableCatalogEntry::GetVirtualColumns();
+	// a scan that reads no column, as count(*) does, need not read the row id
+	result.insert(make_pair(COLUMN_IDENTIFIER_EMPTY, TableColumn("", LogicalType::BOOLEAN)));
+	return result;
+}
+
 TableStorageInfo SQLiteTableEntry::GetStorageInfo(ClientContext &context) {
 	auto &transaction = Transaction::Get(context, catalog).Cast<SQLiteTransaction>();
 	auto &db = transaction.GetDB();

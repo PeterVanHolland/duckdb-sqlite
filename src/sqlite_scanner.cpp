@@ -93,9 +93,12 @@ static string SqliteGetScanSQL(const SqliteBindData &bind_data, const vector<col
 		return bind_data.sql;
 	}
 	auto col_names = StringUtil::Join(column_ids.data(), column_ids.size(), ", ", [&](const idx_t column_id) {
-		if (column_id == (column_t)-1) {
-			// deletes and updates refuse a table without a row id name, other scans do not read it
-			return bind_data.row_id_name.empty() ? string("NULL") : bind_data.row_id_name;
+		if (column_id == COLUMN_IDENTIFIER_EMPTY) {
+			return string("NULL");
+		}
+		if (column_id == COLUMN_IDENTIFIER_ROW_ID) {
+			SQLiteUtils::CheckRowIdName(bind_data.row_id_name, bind_data.table_name);
+			return bind_data.row_id_name;
 		}
 		return '"' + SQLiteUtils::SanitizeIdentifier(bind_data.names[column_id]) + '"';
 	});
