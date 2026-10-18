@@ -64,6 +64,47 @@ SELECT a FROM s1.u
 ----
 2
 
+# a generated column takes its name too
+query I
+FROM sqlite_query(s1, 'CREATE TABLE g(a INTEGER, "rowid" INTEGER, oid INTEGER GENERATED ALWAYS AS (7))')
+----
+0
+
+query I
+FROM sqlite_query(s1, 'INSERT INTO g(a, "rowid") VALUES (1, 5), (2, 5)')
+----
+2
+
+query I
+DELETE FROM s1.g WHERE a = 1
+----
+1
+
+query I
+SELECT a FROM s1.g
+----
+2
+
+# a column named rowid that is the INTEGER PRIMARY KEY is the row id
+query I
+FROM sqlite_query(s1, 'CREATE TABLE k("rowid" INTEGER PRIMARY KEY, oid INTEGER, _rowid_ INTEGER)')
+----
+0
+
+statement ok
+INSERT INTO s1.k VALUES (1, 7, 7), (2, 7, 7)
+
+query I
+UPDATE s1.k SET oid = 8 WHERE rowid = 2
+----
+1
+
+query II
+SELECT rowid, oid FROM s1.k ORDER BY rowid
+----
+1	7
+2	8
+
 # with all three names taken, the rows cannot be addressed
 statement ok
 CREATE TABLE s1.all_names(a INTEGER, "rowid" INTEGER, "oid" INTEGER, "_rowid_" INTEGER);
@@ -85,4 +126,9 @@ query I
 SELECT a FROM s1.all_names ORDER BY a
 ----
 1
+2
+
+query I
+SELECT count(*) FROM s1.all_names
+----
 2

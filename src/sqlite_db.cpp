@@ -367,6 +367,34 @@ bool SQLiteDB::ColumnExists(const string &table_name, const string &column_name)
 	return false;
 }
 
+string SQLiteDB::GetRowIdName(const string &table_name) {
+	// table_xinfo also lists the generated columns, which take these names too
+	auto stmt = Prepare(StringUtil::Format("PRAGMA table_xinfo('%s')", SQLiteUtils::SanitizeString(table_name)));
+	vector<string> column_names;
+	vector<string> primary_key;
+	string primary_key_type;
+	while (stmt.Step()) {
+		column_names.push_back(stmt.GetValue<string>(1));
+		if (stmt.GetValue<int>(5)) {
+			primary_key.push_back(column_names.back());
+			primary_key_type = stmt.GetValue<string>(2);
+		}
+	}
+	// a column that is the INTEGER PRIMARY KEY refers to the row id itself
+	bool integer_primary_key = primary_key.size() == 1 && StringUtil::CIEquals(primary_key_type, "INTEGER");
+	for (auto name : {"rowid", "oid", "_rowid_"}) {
+		bool taken = false;
+		for (auto &column_name : column_names) {
+			bool is_row_id = integer_primary_key && column_name == primary_key[0];
+			taken = taken || (StringUtil::CIEquals(column_name, name) && !is_row_id);
+		}
+		if (!taken) {
+			return name;
+		}
+	}
+	return string();
+}
+
 bool SQLiteDB::GetRowIdInfo(const string &table_name, const string &row_id_name, RowIdInfo &row_id_info) {
 	if (row_id_name.empty()) {
 		return false;

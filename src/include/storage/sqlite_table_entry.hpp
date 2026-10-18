@@ -29,9 +29,6 @@ public:
 
 	TableStorageInfo GetStorageInfo(ClientContext &context) override;
 
-	//! The name of the row id in the SQL sent to SQLite, empty when the columns take every name
-	string GetRowIdName() const;
-
 	void BindUpdateConstraints(Binder &binder, LogicalGet &get, LogicalProjection &proj, LogicalUpdate &update,
 	                           ClientContext &context) override;
 

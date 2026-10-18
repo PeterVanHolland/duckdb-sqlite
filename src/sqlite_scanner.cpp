@@ -79,7 +79,7 @@ static unique_ptr<FunctionData> SqliteBind(ClientContext &context, TableFunction
 	for (auto &nm : names) {
 		result->names.push_back(nm.GetIdentifierName());
 	}
-	result->row_id_name = SQLiteUtils::RowIdName(result->names);
+	result->row_id_name = db.GetRowIdName(result->table_name);
 	if (!db.GetRowIdInfo(result->table_name, result->row_id_name, result->row_id_info)) {
 		result->rows_per_group = optional_idx();
 	}
@@ -94,8 +94,8 @@ static string SqliteGetScanSQL(const SqliteBindData &bind_data, const vector<col
 	}
 	auto col_names = StringUtil::Join(column_ids.data(), column_ids.size(), ", ", [&](const idx_t column_id) {
 		if (column_id == (column_t)-1) {
-			SQLiteUtils::CheckRowIdName(bind_data.row_id_name, bind_data.table_name);
-			return bind_data.row_id_name;
+			// deletes and updates refuse a table without a row id name, other scans do not read it
+			return bind_data.row_id_name.empty() ? string("NULL") : bind_data.row_id_name;
 		}
 		return '"' + SQLiteUtils::SanitizeIdentifier(bind_data.names[column_id]) + '"';
 	});

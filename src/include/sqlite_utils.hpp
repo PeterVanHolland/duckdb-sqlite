@@ -31,8 +31,6 @@ public:
 
 	//! The value of sqlite_all_varchar, false when it is not set or NULL
 	static bool AllVarchar(ClientContext &context);
-	//! The name SQLite gives the row id of a table with these columns, empty when the columns take every such name
-	static string RowIdName(const vector<string> &column_names);
 	//! Throws when a table has no name for its row id
 	static void CheckRowIdName(const string &row_id_name, const string &table_name);
 };
