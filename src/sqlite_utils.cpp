@@ -33,6 +33,12 @@ string SQLiteUtils::SanitizeString(const string &table_name) {
 	return StringUtil::Replace(table_name, "'", "''");
 }
 
+void SQLiteUtils::CheckRowIdName(const string &row_id_name, const string &table_name) {
+	if (row_id_name.empty()) {
+		throw NotImplementedException("SQLite has no name for the row id of table \"%s\"", table_name);
+	}
+}
+
 string SQLiteUtils::SanitizeIdentifier(const string &table_name) {
 	return StringUtil::Replace(table_name, "\"", "\"\"");
 }

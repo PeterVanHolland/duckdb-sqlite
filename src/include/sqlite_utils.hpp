@@ -31,6 +31,8 @@ public:
 
 	//! The value of sqlite_all_varchar, false when it is not set or NULL
 	static bool AllVarchar(ClientContext &context);
+	//! Throws when SQLite has no name for the row id of a table
+	static void CheckRowIdName(const string &row_id_name, const string &table_name);
 };
 
 struct RowIdInfo {

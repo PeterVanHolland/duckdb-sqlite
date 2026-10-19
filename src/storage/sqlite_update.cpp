@@ -27,7 +27,9 @@ public:
 	idx_t update_count;
 };
 
-string GetUpdateSQL(SQLiteTableEntry &table, const vector<PhysicalIndex> &index) {
+string GetUpdateSQL(SQLiteDB &db, SQLiteTableEntry &table, const vector<PhysicalIndex> &index) {
+	auto row_id_name = db.GetRowIdName(table.name.GetIdentifierName());
+	SQLiteUtils::CheckRowIdName(row_id_name, table.name.GetIdentifierName());
 	string result;
 	result = "UPDATE " + SQLiteUtils::WriteOptionallyQuoted(table.name.GetIdentifierName());
 	result += " SET ";
@@ -39,7 +41,7 @@ string GetUpdateSQL(SQLiteTableEntry &table, const vector<PhysicalIndex> &index)
 		result += SQLiteUtils::WriteOptionallyQuoted(col.GetName().GetIdentifierName());
 		result += " = ?";
 	}
-	result += " WHERE rowid = ?";
+	result += " WHERE " + row_id_name + " = ?";
 	return result;
 }
 
@@ -48,7 +50,7 @@ unique_ptr<GlobalSinkState> SQLiteUpdate::GetGlobalSinkState(ClientContext &cont
 
 	auto &transaction = SQLiteTransaction::Get(context, sqlite_table.catalog);
 	auto result = make_uniq<SQLiteUpdateGlobalState>(sqlite_table);
-	result->statement = transaction.GetDB().Prepare(GetUpdateSQL(sqlite_table, columns));
+	result->statement = transaction.GetDB().Prepare(GetUpdateSQL(transaction.GetDB(), sqlite_table, columns));
 	return std::move(result);
 }
 

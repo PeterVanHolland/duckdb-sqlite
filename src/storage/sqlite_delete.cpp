@@ -25,6 +25,7 @@ public:
 	}
 
 	SQLiteTableEntry &table;
+	string delete_sql;
 	SQLiteStatement statement;
 	std::mutex rowid_lock;
 	vector<row_t> rowids;
@@ -32,17 +33,21 @@ public:
 	bool delete_done = false;
 };
 
-string GetDeleteSQL(const string &table_name) {
+string GetDeleteSQL(SQLiteDB &db, const string &table_name) {
+	auto row_id_name = db.GetRowIdName(table_name);
+	SQLiteUtils::CheckRowIdName(row_id_name, table_name);
 	string result;
 	result = "DELETE FROM " + SQLiteUtils::WriteOptionallyQuoted(table_name);
-	result += " WHERE rowid = ?";
+	result += " WHERE " + row_id_name + " = ?";
 	return result;
 }
 
 unique_ptr<GlobalSinkState> SQLiteDelete::GetGlobalSinkState(ClientContext &context) const {
 	auto &sqlite_table = table.Cast<SQLiteTableEntry>();
 
+	auto &transaction = SQLiteTransaction::Get(context, sqlite_table.catalog);
 	auto result = make_uniq<SQLiteDeleteGlobalState>(sqlite_table);
+	result->delete_sql = GetDeleteSQL(transaction.GetDB(), sqlite_table.name.GetIdentifierName());
 	return std::move(result);
 }
 
@@ -69,8 +74,7 @@ SourceResultType SQLiteDelete::GetDataInternal(ExecutionContext &context, DataCh
 	if (!insert_gstate.delete_done) {
 		if (!insert_gstate.statement.IsOpen()) {
 			auto &transaction = SQLiteTransaction::Get(context.client, insert_gstate.table.catalog);
-			insert_gstate.statement =
-			    transaction.GetDB().Prepare(GetDeleteSQL(insert_gstate.table.name.GetIdentifierName()));
+			insert_gstate.statement = transaction.GetDB().Prepare(insert_gstate.delete_sql);
 		}
 		for (auto row_id : insert_gstate.rowids) {
 			insert_gstate.statement.Bind<int64_t>(0, row_id);

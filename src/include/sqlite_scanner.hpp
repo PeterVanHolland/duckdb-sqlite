@@ -25,6 +25,8 @@ struct SqliteBindData : public TableFunctionData {
 	vector<Value> params;
 
 	RowIdInfo row_id_info;
+	//! The name of the row id in the SQL sent to SQLite
+	string row_id_name;
 	bool all_varchar = false;
 
 	optional_idx rows_per_group = 122880;

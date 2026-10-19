@@ -1,0 +1,258 @@
+# name: test/sql/storage/attach_rowid_column.test
+# description: Scans, deletes and updates use the row id of a table that has a column named rowid
+# group: [storage]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/attach_rowid_column.db' AS s1 (TYPE SQLITE)
+
+statement ok
+CREATE TABLE s1.t(a INTEGER, "rowid" INTEGER);
+
+statement ok
+INSERT INTO s1.t VALUES (1, 5), (2, 5), (3, NULL);
+
+query I
+DELETE FROM s1.t WHERE a = 1
+----
+1
+
+query II
+SELECT a, rowid FROM s1.t ORDER BY a
+----
+2	5
+3	NULL
+
+query I
+UPDATE s1.t SET a = 30 WHERE a = 3
+----
+1
+
+query II
+SELECT a, rowid FROM s1.t ORDER BY a
+----
+2	5
+30	NULL
+
+# a scan in ranges of the row id
+statement ok
+CREATE TABLE s1.r(a INTEGER, "rowid" INTEGER);
+
+statement ok
+INSERT INTO s1.r VALUES (1, 10), (2, 20), (3, NULL), (4, 1000);
+
+query II
+SELECT count(*), sum(a) FROM s1.r
+----
+4	10
+
+# with columns named rowid and oid, in any case, the row id is _rowid_
+statement ok
+CREATE TABLE s1.u(a INTEGER, "RowId" INTEGER, "OID" INTEGER);
+
+statement ok
+INSERT INTO s1.u VALUES (1, 7, 7), (2, 7, 7);
+
+query I
+DELETE FROM s1.u WHERE a = 1
+----
+1
+
+query I
+SELECT a FROM s1.u
+----
+2
+
+# a generated column takes its name too
+query I
+FROM sqlite_query(s1, 'CREATE TABLE g(a INTEGER, "rowid" INTEGER, oid INTEGER GENERATED ALWAYS AS (7))')
+----
+0
+
+query I
+FROM sqlite_query(s1, 'INSERT INTO g(a, "rowid") VALUES (1, 5), (2, 5)')
+----
+2
+
+query I
+DELETE FROM s1.g WHERE a = 1
+----
+1
+
+query I
+SELECT a FROM s1.g
+----
+2
+
+# a column named rowid that is the INTEGER PRIMARY KEY is the row id
+query I
+FROM sqlite_query(s1, 'CREATE TABLE k("rowid" INTEGER PRIMARY KEY, oid INTEGER, _rowid_ INTEGER)')
+----
+0
+
+statement ok
+INSERT INTO s1.k VALUES (1, 7, 7), (2, 7, 7)
+
+query I
+UPDATE s1.k SET oid = 8 WHERE rowid = 2
+----
+1
+
+query II
+SELECT rowid, oid FROM s1.k ORDER BY rowid
+----
+1	7
+2	8
+
+# an INTEGER PRIMARY KEY DESC is not the row id
+query I
+FROM sqlite_query(s1, 'CREATE TABLE d(a INTEGER, "rowid" INTEGER, oid INTEGER PRIMARY KEY DESC)')
+----
+0
+
+query I
+FROM sqlite_query(s1, 'INSERT INTO d VALUES (1, 1, 10), (2, 2, NULL), (3, 3, NULL), (4, 4, 0)')
+----
+4
+
+query I
+UPDATE s1.d SET a = 20 WHERE a = 2
+----
+1
+
+query II
+SELECT a, oid FROM s1.d ORDER BY "rowid"
+----
+1	10
+20	NULL
+3	NULL
+4	0
+
+# with all three names taken, an INTEGER PRIMARY KEY of another name is the row id
+query I
+FROM sqlite_query(s1, 'CREATE TABLE i(id INTEGER PRIMARY KEY, "rowid" INTEGER, oid INTEGER, _rowid_ INTEGER)')
+----
+0
+
+statement ok
+INSERT INTO s1.i VALUES (1, 9, 9, 9), (2, 9, 9, 9)
+
+query I
+DELETE FROM s1.i WHERE id = 1
+----
+1
+
+query I
+SELECT id FROM s1.i
+----
+2
+
+# an INTEGER PRIMARY KEY with an empty name
+query I
+FROM sqlite_query(s1, 'CREATE TABLE e("" INTEGER PRIMARY KEY, "rowid" INTEGER, oid INTEGER, _rowid_ INTEGER)')
+----
+0
+
+query I
+FROM sqlite_query(s1, 'INSERT INTO e VALUES (1, 9, 9, 9), (2, 8, 8, 8)')
+----
+2
+
+query I
+DELETE FROM s1.e WHERE oid = 9
+----
+1
+
+query I
+SELECT oid FROM s1.e
+----
+8
+
+# tables named like the pragma functions do not change the row id name
+statement ok
+CREATE TABLE s1.pragma_table_list(a INTEGER)
+
+statement ok
+CREATE TABLE s1.pragma_index_list(a INTEGER)
+
+statement ok
+CREATE TABLE s1.p(id INTEGER PRIMARY KEY, a INTEGER)
+
+statement ok
+INSERT INTO s1.p VALUES (1, 1), (2, 2)
+
+query I
+DELETE FROM s1.p WHERE a = 1
+----
+1
+
+query I
+SELECT count(*) FROM s1.p
+----
+1
+
+# a WITHOUT ROWID table has no row id
+query I
+FROM sqlite_query(s1, 'CREATE TABLE n("rowid" INT PRIMARY KEY, a INTEGER) WITHOUT ROWID')
+----
+0
+
+statement ok
+INSERT INTO s1.n VALUES (1, 1), (2, 2)
+
+query I
+SELECT count(*) FROM s1.n
+----
+2
+
+statement error
+DELETE FROM s1.n WHERE a = 1
+----
+SQLite has no name for the row id of table "n"
+
+query I
+FROM sqlite_query(s1, 'CREATE TABLE w(k INT PRIMARY KEY, a INTEGER) WITHOUT ROWID')
+----
+0
+
+statement ok
+INSERT INTO s1.w VALUES (1, 1), (2, 2)
+
+query I
+SELECT count(*) FROM s1.w
+----
+2
+
+statement error
+SELECT rowid FROM s1.w
+----
+SQLite has no name for the row id of table "w"
+
+# with all three names taken, the rows cannot be addressed
+statement ok
+CREATE TABLE s1.all_names(a INTEGER, "rowid" INTEGER, "oid" INTEGER, "_rowid_" INTEGER);
+
+statement ok
+INSERT INTO s1.all_names VALUES (1, 1, 1, 1), (2, 1, 1, 1);
+
+statement error
+DELETE FROM s1.all_names WHERE a = 1
+----
+SQLite has no name for the row id of table "all_names"
+
+statement error
+UPDATE s1.all_names SET a = 3 WHERE a = 1
+----
+SQLite has no name for the row id of table "all_names"
+
+query I
+SELECT a FROM s1.all_names ORDER BY a
+----
+1
+2
+
+query I
+SELECT count(*) FROM s1.all_names
+----
+2

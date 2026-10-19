@@ -39,7 +39,8 @@ TableFunction SQLiteTableEntry::GetScanFunction(ClientContext &context, unique_p
 	auto &transaction = Transaction::Get(context, catalog).Cast<SQLiteTransaction>();
 	auto &db = transaction.GetDB();
 
-	if (!db.GetRowIdInfo(name.GetIdentifierName(), result->row_id_info)) {
+	result->row_id_name = db.GetRowIdName(name.GetIdentifierName());
+	if (!db.GetRowIdInfo(name.GetIdentifierName(), result->row_id_name, result->row_id_info)) {
 		result->rows_per_group = optional_idx();
 	}
 
@@ -70,13 +71,20 @@ TableFunction SQLiteTableEntry::GetScanFunction(ClientContext &context, unique_p
 	return static_cast<TableFunction>(SqliteScanFunction());
 }
 
+virtual_column_map_t SQLiteTableEntry::GetVirtualColumns() const {
+	auto result = TableCatalogEntry::GetVirtualColumns();
+	// a scan that reads no column, as count(*) does, need not read the row id
+	result.insert(make_pair(COLUMN_IDENTIFIER_EMPTY, TableColumn("", LogicalType::BOOLEAN)));
+	return result;
+}
+
 TableStorageInfo SQLiteTableEntry::GetStorageInfo(ClientContext &context) {
 	auto &transaction = Transaction::Get(context, catalog).Cast<SQLiteTransaction>();
 	auto &db = transaction.GetDB();
 	TableStorageInfo result;
 
 	RowIdInfo info;
-	if (!db.GetRowIdInfo(name.GetIdentifierName(), info)) {
+	if (!db.GetRowIdInfo(name.GetIdentifierName(), db.GetRowIdName(name.GetIdentifierName()), info)) {
 		// probably
 		result.cardinality = 10000;
 	} else {

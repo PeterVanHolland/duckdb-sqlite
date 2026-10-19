@@ -367,11 +367,57 @@ bool SQLiteDB::ColumnExists(const string &table_name, const string &column_name)
 	return false;
 }
 
-bool SQLiteDB::GetRowIdInfo(const string &table_name, RowIdInfo &row_id_info) {
+string SQLiteDB::GetRowIdName(const string &table_name) {
+	auto escaped_table_name = SQLiteUtils::SanitizeString(table_name);
+	auto stmt = Prepare(StringUtil::Format("PRAGMA table_list('%s')", escaped_table_name));
+	if (stmt.Step() && stmt.GetValue<int>(4)) {
+		// a WITHOUT ROWID table
+		return string();
+	}
+	// table_xinfo also lists the generated columns, which take these names too
+	stmt = Prepare(StringUtil::Format("PRAGMA table_xinfo('%s')", escaped_table_name));
+	vector<string> column_names;
+	vector<string> primary_key;
+	string primary_key_type;
+	while (stmt.Step()) {
+		column_names.push_back(stmt.GetValue<string>(1));
+		if (stmt.GetValue<int>(5)) {
+			primary_key.push_back(column_names.back());
+			primary_key_type = stmt.GetValue<string>(2);
+		}
+	}
+	// an INTEGER PRIMARY KEY is the row id, unless it is declared DESC inline, which gives it an index of its own
+	bool has_row_id_column = primary_key.size() == 1 && StringUtil::CIEquals(primary_key_type, "INTEGER");
+	if (has_row_id_column) {
+		stmt = Prepare(StringUtil::Format("PRAGMA index_list('%s')", escaped_table_name));
+		while (stmt.Step()) {
+			has_row_id_column = has_row_id_column && stmt.GetValue<string>(3) != "pk";
+		}
+	}
+	for (auto name : {"rowid", "oid", "_rowid_"}) {
+		bool taken = false;
+		for (auto &column_name : column_names) {
+			bool is_row_id = has_row_id_column && column_name == primary_key[0];
+			taken = taken || (StringUtil::CIEquals(column_name, name) && !is_row_id);
+		}
+		if (!taken) {
+			return name;
+		}
+	}
+	if (has_row_id_column) {
+		return SQLiteUtils::WriteQuotedAndEscaped(primary_key[0], '"');
+	}
+	return string();
+}
+
+bool SQLiteDB::GetRowIdInfo(const string &table_name, const string &row_id_name, RowIdInfo &row_id_info) {
+	if (row_id_name.empty()) {
+		return false;
+	}
 	SQLiteStatement stmt;
 	auto sanitized_table_name = SQLiteUtils::SanitizeIdentifier(table_name);
-	if (!TryPrepare(StringUtil::Format("SELECT (SELECT MIN(ROWID) FROM \"%s\"), (SELECT MAX(ROWID) FROM \"%s\")",
-	                                   sanitized_table_name, sanitized_table_name),
+	if (!TryPrepare(StringUtil::Format("SELECT (SELECT MIN(%s) FROM \"%s\"), (SELECT MAX(%s) FROM \"%s\")", row_id_name,
+	                                   sanitized_table_name, row_id_name, sanitized_table_name),
 	                stmt)) {
 		return false;
 	}
