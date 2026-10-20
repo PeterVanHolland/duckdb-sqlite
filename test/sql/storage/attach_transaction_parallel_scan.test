@@ -99,3 +99,35 @@ query I con1
 SELECT sum(v) FROM s.big
 ----
 1
+
+# a sqlite_query prepared before the transaction marks the transaction that executes it
+statement ok con1
+PREPARE set_v AS FROM sqlite_query('s', 'UPDATE big SET v = 42 WHERE i = 1')
+
+statement ok con1
+BEGIN
+
+query I con1
+EXECUTE set_v
+----
+1
+
+query I con1
+SELECT sum(v) FROM s.big
+----
+43
+
+statement ok con1
+ROLLBACK
+
+# a scan bound before a sqlite_query of the same statement reads through the transaction's connection
+statement ok con1
+BEGIN
+
+query I con1
+SELECT sum(v) FROM s.big CROSS JOIN sqlite_query('s', 'UPDATE big SET v = 42 WHERE i = 1')
+----
+43
+
+statement ok con1
+ROLLBACK
