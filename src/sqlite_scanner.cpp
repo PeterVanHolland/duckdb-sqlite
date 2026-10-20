@@ -288,9 +288,17 @@ static unique_ptr<GlobalTableFunctionState> SqliteInitGlobalState(ClientContext 
 	auto &bind_data = input.bind_data->Cast<SqliteBindData>();
 	auto result = make_uniq<SqliteGlobalState>(SqliteMaxThreads(context, input.bind_data.get()));
 	result->position = 0;
-	if (!bind_data.transaction_catalog_name.empty() && !SqliteGetTransaction(context, bind_data).IsReadOnly()) {
-		result->use_transaction_db = true;
-		result->max_threads = 1;
+	if (!bind_data.sql.empty() && !bind_data.catalog_name.empty()) {
+		// a prepared sqlite_query runs in the transaction that executes it
+		auto attached_catalog = SQLiteCatalog::Lookup(context, bind_data.catalog_name);
+		SQLiteTransaction::Get(context, attached_catalog.Get<SQLiteCatalog>()).SetRanQuery();
+	}
+	if (!bind_data.transaction_catalog_name.empty()) {
+		auto &transaction = SqliteGetTransaction(context, bind_data);
+		if (!transaction.IsReadOnly() || transaction.RanQuery()) {
+			result->use_transaction_db = true;
+			result->max_threads = 1;
+		}
 	}
 	if (bind_data.rows_per_group.IsValid()) {
 		auto min_row_id = bind_data.row_id_info.min_rowid.GetIndex();
