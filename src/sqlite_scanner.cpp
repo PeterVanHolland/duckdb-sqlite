@@ -45,6 +45,8 @@ struct SqliteGlobalState : public GlobalTableFunctionState {
 	idx_t position = 0;
 	idx_t max_threads;
 	idx_t rows_per_group = 0;
+	//! Set when the statement writes, which needs the read locks of its scans on the transaction's connection
+	bool use_transaction_db = false;
 
 	idx_t MaxThreads() const override {
 		return max_threads;
@@ -113,9 +115,8 @@ static bool SqlitePrepareStatement(const SqliteBindData &bind_data, SqliteLocalS
 		local_state.stmt_sql.clear();
 		SQLiteStatement stmt;
 		if (!local_state.db->TryPrepare(sql, stmt)) {
-			auto rc = sqlite3_errcode(stmt.db);
-			if ((rc & 0xFF) == SQLITE_BUSY && !bind_data.transaction_catalog_name.empty() &&
-			    local_state.db == &local_state.owned_db) {
+			if (SQLiteStatement::IsLockedOut(sqlite3_extended_errcode(stmt.db)) &&
+			    !bind_data.transaction_catalog_name.empty() && local_state.db == &local_state.owned_db) {
 				return false;
 			}
 			throw std::runtime_error("Failed to prepare query \"" + sql + "\": " + string(sqlite3_errmsg(stmt.db)));
@@ -129,14 +130,32 @@ static bool SqlitePrepareStatement(const SqliteBindData &bind_data, SqliteLocalS
 	return true;
 }
 
+//! Holds the mutex of a connection that several scan threads share, values are read outside of sqlite3_step
+struct SqliteConnectionLock {
+	explicit SqliteConnectionLock(sqlite3 *db) : mutex(db ? sqlite3_db_mutex(db) : nullptr) {
+		if (mutex) {
+			sqlite3_mutex_enter(mutex);
+		}
+	}
+	~SqliteConnectionLock() {
+		if (mutex) {
+			sqlite3_mutex_leave(mutex);
+		}
+	}
+	sqlite3_mutex *mutex;
+};
+
+static SQLiteTransaction &SqliteGetTransaction(ClientContext &context, const SqliteBindData &bind_data) {
+	auto attached_catalog = SQLiteCatalog::Lookup(context, bind_data.transaction_catalog_name);
+	return SQLiteTransaction::Get(context, attached_catalog.Get<SQLiteCatalog>());
+}
+
 //! A writer waiting for the read lock of the transaction keeps new readers out, the transaction's connection holds it
 static void SqliteUseTransactionDB(ClientContext &context, const SqliteBindData &bind_data,
                                    SqliteLocalState &local_state) {
-	auto attached_catalog = SQLiteCatalog::Lookup(context, bind_data.transaction_catalog_name);
-	SQLiteCatalog &catalog = attached_catalog.Get<SQLiteCatalog>();
 	local_state.stmt.Close();
 	local_state.stmt_sql.clear();
-	local_state.db = &SQLiteTransaction::Get(context, catalog).GetDB();
+	local_state.db = &SqliteGetTransaction(context, bind_data).GetDB();
 	local_state.owned_db.Close();
 }
 
@@ -255,6 +274,8 @@ SqliteInitLocalState(ExecutionContext &context, TableFunctionInitInput &input, G
 		auto attached_catalog = SQLiteCatalog::Lookup(context.client, bind_data.catalog_name);
 		SQLiteCatalog &catalog = attached_catalog.Get<SQLiteCatalog>();
 		result->db = &SQLiteTransaction::Get(context.client, catalog).GetDB();
+	} else if (gstate.use_transaction_db) {
+		result->db = &SqliteGetTransaction(context.client, bind_data).GetDB();
 	}
 	if (!SqliteParallelStateNext(context.client, bind_data, *result, gstate)) {
 		result->done = true;
@@ -267,6 +288,10 @@ static unique_ptr<GlobalTableFunctionState> SqliteInitGlobalState(ClientContext 
 	auto &bind_data = input.bind_data->Cast<SqliteBindData>();
 	auto result = make_uniq<SqliteGlobalState>(SqliteMaxThreads(context, input.bind_data.get()));
 	result->position = 0;
+	if (!bind_data.transaction_catalog_name.empty() && !SqliteGetTransaction(context, bind_data).IsReadOnly()) {
+		result->use_transaction_db = true;
+		result->max_threads = 1;
+	}
 	if (bind_data.rows_per_group.IsValid()) {
 		auto min_row_id = bind_data.row_id_info.min_rowid.GetIndex();
 		if (min_row_id > 0) {
@@ -322,6 +347,7 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 			}
 		};
 		idx_t out_idx = 0;
+		auto connection_lock = make_uniq<SqliteConnectionLock>(state.stmt.db);
 		while (true) {
 			if (out_idx == STANDARD_VECTOR_SIZE) {
 				output.SetChildCardinality(out_idx);
@@ -335,8 +361,10 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 				if (state.scan_count > 0 || bind_data.transaction_catalog_name.empty() || state.db != &state.owned_db) {
 					throw std::runtime_error(string(sqlite3_errmsg(stmt.db)));
 				}
+				connection_lock.reset();
 				SqliteUseTransactionDB(context, bind_data, state);
 				SqliteInitInternal(context, bind_data, state, state.rowid_min, state.rowid_max);
+				connection_lock = make_uniq<SqliteConnectionLock>(state.stmt.db);
 				continue;
 			}
 			if (!has_more) {

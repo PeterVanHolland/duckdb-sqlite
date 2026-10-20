@@ -59,7 +59,8 @@ TableFunction SQLiteTableEntry::GetScanFunction(ClientContext &context, unique_p
 	    !transaction.IsReadOnly() || sqlite_catalog.InMemory() || threads <= 1 || disable_multithreaded_scans;
 	if (!use_global_db && !context.transaction.IsAutoCommit()) {
 		// other connections read the snapshot of the transaction only while its read lock keeps writers out
-		use_global_db = FileSystem::IsRemoteFile(sqlite_catalog.path) || !db.TransactionReadLockBlocksWriters();
+		use_global_db = transaction.RanQuery() || FileSystem::IsRemoteFile(sqlite_catalog.path) ||
+		                !db.TransactionReadLockBlocksWriters();
 		result->transaction_catalog_name = sqlite_catalog.GetName();
 	}
 

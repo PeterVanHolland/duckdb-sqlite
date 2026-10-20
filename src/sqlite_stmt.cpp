@@ -46,10 +46,15 @@ bool SQLiteStatement::TryStep(bool &has_row) {
 		has_row = rc == SQLITE_ROW;
 		return true;
 	}
-	if ((rc & 0xFF) == SQLITE_BUSY) {
+	if (IsLockedOut(rc)) {
 		return false;
 	}
 	throw std::runtime_error(string(sqlite3_errmsg(db)));
+}
+
+bool SQLiteStatement::IsLockedOut(int rc) {
+	// a read only connection cannot roll back the hot journal of a writer that crashed
+	return (rc & 0xFF) == SQLITE_BUSY || rc == SQLITE_READONLY_ROLLBACK || rc == SQLITE_READONLY_RECOVERY;
 }
 
 int SQLiteStatement::GetType(idx_t col) {

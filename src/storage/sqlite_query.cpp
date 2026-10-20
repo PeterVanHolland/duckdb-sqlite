@@ -70,6 +70,7 @@ static unique_ptr<FunctionData> SQLiteQueryBind(ClientContext &context, TableFun
 	}
 
 	auto &con = transaction.GetDB();
+	transaction.SetRanQuery();
 	auto stmt = con.Prepare(sql);
 	if (!stmt.stmt) {
 		throw BinderException("Failed to prepare query \"%s\"", sql);
