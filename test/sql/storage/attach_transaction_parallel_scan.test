@@ -1,0 +1,64 @@
+# name: test/sql/storage/attach_transaction_parallel_scan.test
+# description: Parallel scans in a transaction of a rollback journal database read the snapshot of the transaction
+# group: [storage]
+
+require sqlite_scanner
+
+statement ok
+SET threads = 4
+
+statement ok
+ATTACH '{TEST_DIR}/attach_transaction_parallel_scan.db' AS s (TYPE SQLITE, BUSY_TIMEOUT 100)
+
+statement ok
+CREATE TABLE s.big AS SELECT range AS i, 0 AS v FROM range(500000)
+
+statement ok con1
+BEGIN
+
+query II con1
+SELECT count(*), sum(v) FROM s.big
+----
+500000	0
+
+# the read lock of the transaction keeps writers from committing
+statement error con2
+UPDATE s.big SET v = 1 WHERE i = 400000
+----
+database is locked
+
+query II con1
+SELECT count(*), sum(v) FROM s.big WHERE i >= 250000
+----
+250000	0
+
+statement ok con1
+COMMIT
+
+statement ok con2
+UPDATE s.big SET v = 1 WHERE i = 400000
+
+query I con1
+SELECT sum(v) FROM s.big
+----
+1
+
+# a transaction that wrote reads its own changes through its connection
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE s.big SET v = 2 WHERE i = 100
+
+query I con1
+SELECT sum(v) FROM s.big
+----
+3
+
+statement ok con1
+ROLLBACK
+
+query I con1
+SELECT sum(v) FROM s.big
+----
+1
