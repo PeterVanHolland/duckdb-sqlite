@@ -78,6 +78,21 @@ SELECT sum(v) FROM s.big
 statement ok con1
 ROLLBACK
 
+# a statement that writes the table it scans reads the rows it had when it was bound
+statement ok con1
+BEGIN
+
+statement ok con1
+INSERT INTO s.big SELECT i + 1000000, 1 FROM s.big
+
+query II con1
+SELECT count(*), sum(v) FROM s.big
+----
+1000000	500001
+
+statement ok con1
+ROLLBACK
+
 # sqlite_query can change the transaction without DuckDB knowing, later scans read through the transaction's connection
 statement ok con1
 BEGIN
