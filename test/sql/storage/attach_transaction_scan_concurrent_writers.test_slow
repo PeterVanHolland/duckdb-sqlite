@@ -13,7 +13,7 @@ statement ok
 ATTACH '{TEST_DIR}/attach_transaction_scan_concurrent_writers.db' AS s (TYPE SQLITE, BUSY_TIMEOUT 10000)
 
 statement ok
-CREATE TABLE s.big AS SELECT range AS i, 0 AS v FROM range(500000)
+CREATE TABLE s.big AS SELECT range AS i, 'value ' || range AS s FROM range(500000)
 
 statement ok
 CREATE TABLE s.w(i INTEGER)
@@ -30,10 +30,10 @@ SELECT count(*) FROM s.big
 ----
 500000
 
-query I
-SELECT count(*) FROM s.big WHERE i % 2 = 0
+query II
+SELECT count(*), sum(length(s)) FROM s.big WHERE i % 2 = 0
 ----
-250000
+250000	2944445
 
 statement ok
 COMMIT

@@ -62,3 +62,40 @@ query I con1
 SELECT sum(v) FROM s.big
 ----
 1
+
+# a statement that writes reads through the transaction's connection
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE s.big SET v = v + 1 WHERE i < 300000
+
+query I con1
+SELECT sum(v) FROM s.big
+----
+300001
+
+statement ok con1
+ROLLBACK
+
+# sqlite_query can change the transaction without DuckDB knowing, later scans read through the transaction's connection
+statement ok con1
+BEGIN
+
+query I con1
+FROM sqlite_query('s', 'UPDATE big SET v = 42 WHERE i = 1')
+----
+1
+
+query I con1
+SELECT sum(v) FROM s.big
+----
+43
+
+statement ok con1
+ROLLBACK
+
+query I con1
+SELECT sum(v) FROM s.big
+----
+1
