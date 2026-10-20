@@ -33,6 +33,8 @@ struct SqliteBindData : public TableFunctionData {
 
 	QualifiedName qualified_table_name;
 	Identifier catalog_name;
+	//! Set when the scan reads with its own connections in a transaction, whose connection it falls back to
+	Identifier transaction_catalog_name;
 
 	// required for get_bind_info and only used there
 	weak_ptr<ClientContext> context_ptr;

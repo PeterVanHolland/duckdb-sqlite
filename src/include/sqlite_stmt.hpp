@@ -32,6 +32,8 @@ public:
 
 public:
 	int Step();
+	//! Returns false instead of throwing when the database is locked
+	bool TryStep(bool &has_row);
 	template <class T>
 	T GetValue(idx_t col) {
 		throw InternalException("Unsupported type for SQLiteStatement::GetValue");

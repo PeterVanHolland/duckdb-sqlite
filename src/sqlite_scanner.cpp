@@ -30,6 +30,8 @@ struct SqliteLocalState : public LocalTableFunctionState {
 	vector<column_t> column_ids;
 	//! The amount of rows we scanned as part of this row group
 	idx_t scan_count = 1;
+	idx_t rowid_min = 0;
+	idx_t rowid_max = 0;
 
 	~SqliteLocalState() {
 	}
@@ -104,15 +106,38 @@ static string SqliteGetScanSQL(const SqliteBindData &bind_data, const vector<col
 	return sql;
 }
 
-static void SqlitePrepareStatement(SqliteLocalState &local_state, const string &sql) {
+//! Returns false when the scan's own connection finds the database locked
+static bool SqlitePrepareStatement(const SqliteBindData &bind_data, SqliteLocalState &local_state, const string &sql) {
 	if (!local_state.stmt.IsOpen() || local_state.stmt_sql != sql) {
 		local_state.stmt.Close();
-		local_state.stmt = local_state.db->Prepare(sql.c_str());
+		local_state.stmt_sql.clear();
+		SQLiteStatement stmt;
+		if (!local_state.db->TryPrepare(sql, stmt)) {
+			auto rc = sqlite3_errcode(stmt.db);
+			if ((rc & 0xFF) == SQLITE_BUSY && !bind_data.transaction_catalog_name.empty() &&
+			    local_state.db == &local_state.owned_db) {
+				return false;
+			}
+			throw std::runtime_error("Failed to prepare query \"" + sql + "\": " + string(sqlite3_errmsg(stmt.db)));
+		}
+		local_state.stmt = std::move(stmt);
 		local_state.stmt_sql = sql;
-		return;
+		return true;
 	}
 	local_state.stmt.Reset();
 	local_state.stmt.ClearBindings();
+	return true;
+}
+
+//! A writer waiting for the read lock of the transaction keeps new readers out, the transaction's connection holds it
+static void SqliteUseTransactionDB(ClientContext &context, const SqliteBindData &bind_data,
+                                   SqliteLocalState &local_state) {
+	auto attached_catalog = SQLiteCatalog::Lookup(context, bind_data.transaction_catalog_name);
+	SQLiteCatalog &catalog = attached_catalog.Get<SQLiteCatalog>();
+	local_state.stmt.Close();
+	local_state.stmt_sql.clear();
+	local_state.db = &SQLiteTransaction::Get(context, catalog).GetDB();
+	local_state.owned_db.Close();
 }
 
 static void SqliteInitInternal(ClientContext &context, const SqliteBindData &bind_data, SqliteLocalState &local_state,
@@ -120,14 +145,23 @@ static void SqliteInitInternal(ClientContext &context, const SqliteBindData &bin
 	D_ASSERT(rowid_min <= rowid_max);
 
 	local_state.done = false;
+	local_state.rowid_min = rowid_min;
+	local_state.rowid_max = rowid_max;
 	if (!local_state.db) {
 		SQLiteOpenOptions options;
 		options.access_mode = AccessMode::READ_ONLY;
+		if (!bind_data.transaction_catalog_name.empty()) {
+			// waiting for a lock here can wait for the transaction this scan belongs to
+			options.busy_timeout = 0;
+		}
 		local_state.owned_db = SQLiteDB::Open(bind_data.file_name.c_str(), options, context);
 		local_state.db = &local_state.owned_db;
 	}
 	string sql = SqliteGetScanSQL(bind_data, local_state.column_ids);
-	SqlitePrepareStatement(local_state, sql);
+	if (!SqlitePrepareStatement(bind_data, local_state, sql)) {
+		SqliteUseTransactionDB(context, bind_data, local_state);
+		SqlitePrepareStatement(bind_data, local_state, sql);
+	}
 
 	idx_t param_idx = 0;
 	for (; param_idx < bind_data.params.size(); param_idx++) {
@@ -295,7 +329,16 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 				return;
 			}
 			auto &stmt = state.stmt;
-			auto has_more = stmt.Step();
+			bool has_more;
+			if (!stmt.TryStep(has_more)) {
+				// a read connection can only be locked out before it returns the first row of its slice
+				if (state.scan_count > 0 || bind_data.transaction_catalog_name.empty() || state.db != &state.owned_db) {
+					throw std::runtime_error(string(sqlite3_errmsg(stmt.db)));
+				}
+				SqliteUseTransactionDB(context, bind_data, state);
+				SqliteInitInternal(context, bind_data, state, state.rowid_min, state.rowid_max);
+				continue;
+			}
 			if (!has_more) {
 				state.done = true;
 				output.SetChildCardinality(out_idx);
