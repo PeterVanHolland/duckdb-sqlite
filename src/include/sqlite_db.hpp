@@ -55,6 +55,8 @@ public:
 	//! Gets the max row id of a table, returns false if the table does not have a
 	//! rowid column
 	bool GetRowIdInfo(const string &table_name, RowIdInfo &info);
+	//! Takes the read lock of the open transaction, and returns whether it keeps other connections from committing
+	bool TransactionReadLockBlocksWriters();
 	bool ColumnExists(const string &table_name, const string &column_name);
 	vector<IndexInfo> GetIndexInfo(const string &table_name);
 

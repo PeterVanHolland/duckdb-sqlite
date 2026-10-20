@@ -55,8 +55,14 @@ TableFunction SQLiteTableEntry::GetScanFunction(ClientContext &context, unique_p
 		disable_multithreaded_scans = BooleanValue::Get(disable_multithreaded_scans_val);
 	}
 
-	bool use_global_db = !transaction.IsReadOnly() || !context.transaction.IsAutoCommit() ||
-	                     sqlite_catalog.InMemory() || threads <= 1 || disable_multithreaded_scans;
+	bool use_global_db =
+	    !transaction.IsReadOnly() || sqlite_catalog.InMemory() || threads <= 1 || disable_multithreaded_scans;
+	if (!use_global_db && !context.transaction.IsAutoCommit()) {
+		// other connections read the snapshot of the transaction only while its read lock keeps writers out
+		use_global_db = transaction.RanQuery() || FileSystem::IsRemoteFile(sqlite_catalog.path) ||
+		                !db.TransactionReadLockBlocksWriters();
+		result->transaction_catalog_name = sqlite_catalog.GetName();
+	}
 
 	if (use_global_db) {
 		// only the transaction's connection sees its changes and its snapshot, in-memory databases have no other

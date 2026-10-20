@@ -1,0 +1,48 @@
+# name: test/sql/storage/attach_transaction_scan_concurrent_writers.test_slow
+# description: Scans in transactions of a rollback journal database finish while writers wait to commit
+# group: [storage]
+
+require sqlite_scanner
+
+require notwindows
+
+statement ok
+SET threads = 4
+
+statement ok
+ATTACH '{TEST_DIR}/attach_transaction_scan_concurrent_writers.db' AS s (TYPE SQLITE, BUSY_TIMEOUT 10000)
+
+statement ok
+CREATE TABLE s.big AS SELECT range AS i, 'value ' || range AS s FROM range(500000)
+
+statement ok
+CREATE TABLE s.w(i INTEGER)
+
+concurrentloop i 0 8
+
+loop k 0 5
+
+statement ok
+BEGIN
+
+query I
+SELECT count(*) FROM s.big
+----
+500000
+
+query II
+SELECT count(*), sum(length(s)) FROM s.big WHERE i % 2 = 0
+----
+250000	2944445
+
+statement ok
+COMMIT
+
+statement maybe
+INSERT INTO s.w VALUES ({i} * 10 + {k})
+----
+database is locked
+
+endloop
+
+endloop
