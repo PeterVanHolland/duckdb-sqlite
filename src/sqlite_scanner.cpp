@@ -296,6 +296,7 @@ static unique_ptr<GlobalTableFunctionState> SqliteInitGlobalState(ClientContext 
 	if (!bind_data.transaction_catalog_name.empty()) {
 		auto &transaction = SqliteGetTransaction(context, bind_data);
 		if (!transaction.IsReadOnly() || transaction.RanQuery()) {
+			// the rowids of the table at binding keep the rows that the statement adds out of its scan
 			result->use_transaction_db = true;
 			result->max_threads = 1;
 		}

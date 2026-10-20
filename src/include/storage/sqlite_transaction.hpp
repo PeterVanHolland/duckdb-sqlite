@@ -58,7 +58,7 @@ private:
 	mutex init_lock;
 	atomic<bool> initialized {false};
 	bool started = false;
-	bool ran_query = false;
+	atomic<bool> ran_query {false};
 };
 
 } // namespace duckdb
