@@ -336,16 +336,6 @@ static bool IsSQLiteTimeDefault(const Identifier &name, const string &default_va
 	return true;
 }
 
-//! The current UTC time as text, in the format SQLite gives these keywords
-static unique_ptr<ParsedExpression> SQLiteTimeDefault(const Identifier &name) {
-	string format = name == "current_timestamp" ? "%Y-%m-%d %H:%M:%S"
-	                : name == "current_date"    ? "%Y-%m-%d"
-	                                            : "%H:%M:%S";
-	auto expressions = Parser::GetBuiltinParser().ParseExpressionList(
-	    StringUtil::Format("strftime(make_timestamp(epoch_us(current_timestamp)), '%s')", format));
-	return std::move(expressions[0]);
-}
-
 static unique_ptr<ParsedExpression> ParseSQLiteDefault(const string &default_value, const LogicalType &column_type) {
 	if (default_value == "\"\"") {
 		// the DuckDB parser does not accept zero-length delimited identifiers
@@ -358,11 +348,8 @@ static unique_ptr<ParsedExpression> ParseSQLiteDefault(const string &default_val
 	auto &expr = expressions[0];
 	if (expr->GetExpressionClass() == ExpressionClass::COLUMN_REF) {
 		auto &column_ref = expr->Cast<ColumnRefExpression>();
-		if (!column_ref.IsQualified()) {
-			auto &name = column_ref.GetColumnName();
-			if (IsSQLiteTimeDefault(name, default_value)) {
-				return SQLiteTimeDefault(name);
-			}
+		auto &name = column_ref.GetColumnName();
+		if (!column_ref.IsQualified() && !IsSQLiteTimeDefault(name, default_value)) {
 			return SQLiteStringDefault(name.GetIdentifierName(), column_type);
 		}
 	}

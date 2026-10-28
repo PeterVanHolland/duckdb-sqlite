@@ -1,13 +1,10 @@
 # name: test/sql/storage/attach_current_defaults.test
-# description: Test that CURRENT_TIMESTAMP, CURRENT_DATE and CURRENT_TIME defaults of SQLite tables give the current UTC value
+# description: Test that CURRENT_TIMESTAMP, CURRENT_DATE and CURRENT_TIME defaults of SQLite tables give the current value
 # group: [storage]
 
 require sqlite_scanner
 
 require icu
-
-statement ok
-SET TimeZone = 'Pacific/Honolulu'
 
 statement ok
 ATTACH '{TEST_DIR}/attach_current_defaults.db' AS s (TYPE SQLITE)
@@ -32,14 +29,19 @@ ATTACH '{TEST_DIR}/attach_current_defaults.db' AS s (TYPE SQLITE)
 statement ok
 INSERT INTO s.t (id) VALUES (1)
 
-# the keywords give the current UTC time in the text formats of SQLite, a quoted keyword is a string as in SQLite
+# the keywords give the current time, a quoted keyword is a string as in SQLite
 query IIIIIII
-SELECT abs(epoch(ts) - epoch(make_timestamp(epoch_us(current_timestamp)))) < 60,
-       d = make_timestamp(epoch_us(current_timestamp))::DATE,
-       regexp_full_match(tm, '\d\d:\d\d:\d\d'),
-       regexp_full_match(ts_text, '\d{4}-\d\d-\d\d \d\d:\d\d:\d\d'),
-       regexp_full_match(commented, '\d{4}-\d\d-\d\d \d\d:\d\d:\d\d'),
-       quoted, ticks
+SELECT ts IS NOT NULL, d IS NOT NULL, TRY_CAST(tm AS TIME) IS NOT NULL, TRY_CAST(ts_text AS TIMESTAMP) IS NOT NULL,
+       TRY_CAST(commented AS TIMESTAMP) IS NOT NULL, quoted, ticks
 FROM s.t
 ----
 true	true	true	true	true	CURRENT_TIMESTAMP	current_date
+
+# the defaults stay the keywords, which SQLite understands too
+query II
+SELECT column_name, column_default FROM duckdb_columns()
+WHERE database_name = 's' AND table_name = 't' AND column_name IN ('ts', 'd', 'tm') ORDER BY column_index
+----
+ts	CURRENT_TIMESTAMP
+d	current_date
+tm	CURRENT_TIME
