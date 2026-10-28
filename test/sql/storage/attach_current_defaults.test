@@ -1,5 +1,5 @@
 # name: test/sql/storage/attach_current_defaults.test
-# description: Test that CURRENT_TIMESTAMP, CURRENT_DATE and CURRENT_TIME defaults of SQLite tables give the current value
+# description: Test that CURRENT_TIMESTAMP, CURRENT_DATE and CURRENT_TIME defaults of SQLite tables give the current UTC value
 # group: [storage]
 
 require sqlite_scanner
@@ -7,17 +7,21 @@ require sqlite_scanner
 require icu
 
 statement ok
+SET TimeZone = 'Pacific/Honolulu'
+
+statement ok
 ATTACH '{TEST_DIR}/attach_current_defaults.db' AS s (TYPE SQLITE)
 
 statement ok
 FROM sqlite_query('s', 'CREATE TABLE t (
-    id      INTEGER,
-    ts      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    d       DATE DEFAULT current_date,
-    tm      TEXT DEFAULT (CURRENT_TIME),
-    ts_text TEXT DEFAULT CURRENT_TIMESTAMP,
-    quoted  TEXT DEFAULT "CURRENT_TIMESTAMP",
-    ticks   TEXT DEFAULT `current_date`)')
+    id        INTEGER,
+    ts        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    d         DATE DEFAULT current_date,
+    tm        TEXT DEFAULT (CURRENT_TIME),
+    ts_text   TEXT DEFAULT CURRENT_TIMESTAMP,
+    commented TEXT DEFAULT (CURRENT_TIMESTAMP /* " */),
+    quoted    TEXT DEFAULT "CURRENT_TIMESTAMP",
+    ticks     TEXT DEFAULT `current_date`)')
 
 statement ok
 DETACH s
@@ -28,10 +32,14 @@ ATTACH '{TEST_DIR}/attach_current_defaults.db' AS s (TYPE SQLITE)
 statement ok
 INSERT INTO s.t (id) VALUES (1)
 
-# the keywords give the current value, a quoted keyword is a string as in SQLite
-query IIIIII
-SELECT ts IS NOT NULL, d IS NOT NULL, TRY_CAST(tm AS TIME) IS NOT NULL, TRY_CAST(ts_text AS TIMESTAMP) IS NOT NULL,
+# the keywords give the current UTC time in the text formats of SQLite, a quoted keyword is a string as in SQLite
+query IIIIIII
+SELECT abs(epoch(ts) - epoch(make_timestamp(epoch_us(current_timestamp)))) < 60,
+       d = make_timestamp(epoch_us(current_timestamp))::DATE,
+       regexp_full_match(tm, '\d\d:\d\d:\d\d'),
+       regexp_full_match(ts_text, '\d{4}-\d\d-\d\d \d\d:\d\d:\d\d'),
+       regexp_full_match(commented, '\d{4}-\d\d-\d\d \d\d:\d\d:\d\d'),
        quoted, ticks
 FROM s.t
 ----
-true	true	true	true	CURRENT_TIMESTAMP	current_date
+true	true	true	true	true	CURRENT_TIMESTAMP	current_date

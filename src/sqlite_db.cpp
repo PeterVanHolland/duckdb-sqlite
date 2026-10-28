@@ -323,12 +323,25 @@ static unique_ptr<ParsedExpression> SQLiteStringDefault(const string &str, const
 }
 
 //! CURRENT_TIMESTAMP, CURRENT_DATE and CURRENT_TIME are keywords in a SQLite DEFAULT clause, unless they are quoted
-static bool IsSQLiteTimeDefault(const ColumnRefExpression &column_ref, const string &default_value) {
-	auto name = StringUtil::Lower(column_ref.GetColumnName().GetIdentifierName());
-	if (name != "current_timestamp" && name != "current_date" && name != "current_time") {
+static bool IsSQLiteTimeDefault(const Identifier &name, const string &default_value) {
+	if (!(name == "current_timestamp" || name == "current_date" || name == "current_time")) {
 		return false;
 	}
-	return default_value.find_first_of("\"`") == string::npos;
+	for (auto &token : Parser::Tokenize(default_value)) {
+		auto first = default_value[token.start];
+		if (token.type != SimplifiedTokenType::SIMPLIFIED_TOKEN_COMMENT && (first == '"' || first == '`')) {
+			return false;
+		}
+	}
+	return true;
+}
+
+//! The current UTC time as text, in the format SQLite gives these keywords
+static unique_ptr<ParsedExpression> SQLiteTimeDefault(const Identifier &name) {
+	string format = name == "current_timestamp" ? "%Y-%m-%d %H:%M:%S" : name == "current_date" ? "%Y-%m-%d" : "%H:%M:%S";
+	auto expressions = Parser::GetBuiltinParser().ParseExpressionList(
+	    StringUtil::Format("strftime(make_timestamp(epoch_us(current_timestamp)), '%s')", format));
+	return std::move(expressions[0]);
 }
 
 static unique_ptr<ParsedExpression> ParseSQLiteDefault(const string &default_value, const LogicalType &column_type) {
@@ -343,8 +356,12 @@ static unique_ptr<ParsedExpression> ParseSQLiteDefault(const string &default_val
 	auto &expr = expressions[0];
 	if (expr->GetExpressionClass() == ExpressionClass::COLUMN_REF) {
 		auto &column_ref = expr->Cast<ColumnRefExpression>();
-		if (!column_ref.IsQualified() && !IsSQLiteTimeDefault(column_ref, default_value)) {
-			return SQLiteStringDefault(column_ref.GetColumnName().GetIdentifierName(), column_type);
+		if (!column_ref.IsQualified()) {
+			auto &name = column_ref.GetColumnName();
+			if (IsSQLiteTimeDefault(name, default_value)) {
+				return SQLiteTimeDefault(name);
+			}
+			return SQLiteStringDefault(name.GetIdentifierName(), column_type);
 		}
 	}
 	return std::move(expr);
