@@ -338,7 +338,9 @@ static bool IsSQLiteTimeDefault(const Identifier &name, const string &default_va
 
 //! The current UTC time as text, in the format SQLite gives these keywords
 static unique_ptr<ParsedExpression> SQLiteTimeDefault(const Identifier &name) {
-	string format = name == "current_timestamp" ? "%Y-%m-%d %H:%M:%S" : name == "current_date" ? "%Y-%m-%d" : "%H:%M:%S";
+	string format = name == "current_timestamp" ? "%Y-%m-%d %H:%M:%S"
+	                : name == "current_date"    ? "%Y-%m-%d"
+	                                            : "%H:%M:%S";
 	auto expressions = Parser::GetBuiltinParser().ParseExpressionList(
 	    StringUtil::Format("strftime(make_timestamp(epoch_us(current_timestamp)), '%s')", format));
 	return std::move(expressions[0]);
