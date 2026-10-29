@@ -3,6 +3,7 @@
 #include "dbconnector/attached.hpp"
 
 #include "sqlite_db.hpp"
+#include "sqlite_filter_pushdown.hpp"
 #include "sqlite_stmt.hpp"
 #include "sqlite_scanner.hpp"
 #include "storage/sqlite_table_entry.hpp"
@@ -12,6 +13,7 @@
 #include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/timestamp.hpp"
+#include "duckdb/storage/table/column_segment.hpp"
 #include "duckdb/storage/table/row_group.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/config.hpp"
@@ -28,6 +30,10 @@ struct SqliteLocalState : public LocalTableFunctionState {
 	string stmt_sql;
 	bool done = false;
 	vector<column_t> column_ids;
+	//! The WHERE condition of the pushed down filters
+	string filter_condition;
+	//! The pushed down filters that are evaluated in DuckDB
+	vector<SQLiteScanFilter> filters;
 	//! The amount of rows we scanned as part of this row group
 	idx_t scan_count = 1;
 	idx_t rowid_min = 0;
@@ -70,7 +76,7 @@ static unique_ptr<FunctionData> SqliteBind(ClientContext &context, TableFunction
 	vector<unique_ptr<Constraint>> constraints;
 
 	result->all_varchar = SQLiteUtils::AllVarchar(context);
-	db.GetTableInfo(result->table_name, columns, constraints, result->all_varchar);
+	db.GetTableInfo(result->table_name, columns, constraints, result->all_varchar, result->utf8_text_affinity);
 	for (auto &column : columns.Logical()) {
 		names.emplace_back(column.GetName());
 		return_types.push_back(column.GetType());
@@ -80,7 +86,8 @@ static unique_ptr<FunctionData> SqliteBind(ClientContext &context, TableFunction
 		throw std::runtime_error("no columns for table " + result->table_name);
 	}
 
-	if (!db.GetRowIdInfo(result->table_name, result->row_id_info)) {
+	db.TryGetRowIdName(result->table_name, result->rowid_name);
+	if (!db.GetRowIdInfo(result->table_name, result->rowid_name, result->row_id_info)) {
 		result->rows_per_group = optional_idx();
 	}
 
@@ -92,18 +99,33 @@ static unique_ptr<FunctionData> SqliteBind(ClientContext &context, TableFunction
 	return std::move(result);
 }
 
-static string SqliteGetScanSQL(const SqliteBindData &bind_data, const vector<column_t> &column_ids) {
+static string SqliteGetScanSQL(const SqliteBindData &bind_data, const vector<column_t> &column_ids,
+                               const string &filter_condition) {
 	if (!bind_data.sql.empty()) {
 		return bind_data.sql;
 	}
 	auto col_names = StringUtil::Join(column_ids.data(), column_ids.size(), ", ", [&](const idx_t column_id) {
-		return column_id == (column_t)-1 ? "ROWID"
-		                                 : '"' + SQLiteUtils::SanitizeIdentifier(bind_data.names[column_id]) + '"';
+		if (column_id != (column_t)-1) {
+			return '"' + SQLiteUtils::SanitizeIdentifier(bind_data.names[column_id]) + '"';
+		}
+		if (bind_data.rowid_name.empty()) {
+			throw BinderException("Cannot read the row id of SQLite table \"%s\": columns named rowid, _rowid_ and oid "
+			                      "hide it",
+			                      bind_data.table_name);
+		}
+		return bind_data.rowid_name;
 	});
 
 	auto sql = StringUtil::Format("SELECT %s FROM \"%s\"", col_names, SQLiteUtils::SanitizeIdentifier(bind_data.table_name));
+	vector<string> conditions;
 	if (bind_data.rows_per_group.IsValid()) {
-		sql += " WHERE ROWID BETWEEN ? AND ?";
+		conditions.push_back(bind_data.rowid_name + " BETWEEN ? AND ?");
+	}
+	if (!filter_condition.empty()) {
+		conditions.push_back(filter_condition);
+	}
+	if (!conditions.empty()) {
+		sql += " WHERE " + StringUtil::Join(conditions, " AND ");
 	}
 	return sql;
 }
@@ -176,7 +198,7 @@ static void SqliteInitInternal(ClientContext &context, const SqliteBindData &bin
 		local_state.owned_db = SQLiteDB::Open(bind_data.file_name.c_str(), options, context);
 		local_state.db = &local_state.owned_db;
 	}
-	string sql = SqliteGetScanSQL(bind_data, local_state.column_ids);
+	string sql = SqliteGetScanSQL(bind_data, local_state.column_ids, local_state.filter_condition);
 	if (!SqlitePrepareStatement(bind_data, local_state, sql)) {
 		SqliteUseTransactionDB(context, bind_data, local_state);
 		SqlitePrepareStatement(bind_data, local_state, sql);
@@ -270,6 +292,8 @@ SqliteInitLocalState(ExecutionContext &context, TableFunctionInitInput &input, G
 		return std::move(result);
 	}
 	result->column_ids = input.column_ids;
+	result->filter_condition = SQLiteFilterPushdown::TransformFilters(context.client, bind_data, input.column_ids,
+	                                                                  input.filters, result->filters);
 	if (!bind_data.catalog_name.empty()) {
 		auto attached_catalog = SQLiteCatalog::Lookup(context.client, bind_data.catalog_name);
 		SQLiteCatalog &catalog = attached_catalog.Get<SQLiteCatalog>();
@@ -311,13 +335,33 @@ static unique_ptr<GlobalTableFunctionState> SqliteInitGlobalState(ClientContext 
 	return std::move(result);
 }
 
-static timestamp_t ConvertTimestampInteger(sqlite3_value *val) {
-	return Timestamp::FromEpochSeconds(sqlite3_value_int64(val));
+static timestamp_t ConvertTimestampInteger(sqlite3_stmt *stmt, int col) {
+	return Timestamp::FromEpochSeconds(sqlite3_column_int64(stmt, col));
 }
 
-static timestamp_t ConvertTimestampFloat(sqlite3_value *val) {
-	int64_t timestamp_micros = Cast::Operation<double, int64_t>(sqlite3_value_double(val) * 1000000.0);
+static timestamp_t ConvertTimestampFloat(sqlite3_stmt *stmt, int col) {
+	int64_t timestamp_micros = Cast::Operation<double, int64_t>(sqlite3_column_double(stmt, col) * 1000000.0);
 	return Timestamp::FromEpochMicroSeconds(timestamp_micros);
+}
+
+static void SqliteApplyFilters(SqliteLocalState &state, DataChunk &output) {
+	auto count = output.size();
+	if (state.filters.empty() || count == 0) {
+		return;
+	}
+	SelectionVector sel;
+	idx_t approved_count = count;
+	for (auto &filter : state.filters) {
+		ColumnSegment::FilterSelection(sel, output.data[filter.column_index], *filter.state, count, approved_count);
+		if (approved_count == 0) {
+			break;
+		}
+	}
+	if (approved_count == 0) {
+		output.Reset();
+	} else if (approved_count != count) {
+		output.Slice(sel, approved_count);
+	}
 }
 
 static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
@@ -361,7 +405,7 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 			if (out_idx == STANDARD_VECTOR_SIZE) {
 				output.SetChildCardinality(out_idx);
 				SetVectorSizes(out_idx);
-				return;
+				break;
 			}
 			auto &stmt = state.stmt;
 			bool has_more;
@@ -392,31 +436,34 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 					continue;
 				}
 
-				auto val = stmt.GetValue<sqlite3_value *>(col_idx);
+				// sqlite3_column_value() returns an unprotected sqlite3_value, which must not be read with
+				// sqlite3_value_*() from a parallel scan; sqlite3_column_*() hold the connection mutex.
+				auto raw = stmt.stmt;
+				auto col = int(col_idx);
 				switch (out_vec.GetType().id()) {
 				case LogicalTypeId::BIGINT:
-					stmt.CheckTypeMatches(bind_data, val, sqlite_column_type, SQLITE_INTEGER, col_idx);
-					FlatVector::GetDataMutable<int64_t>(out_vec)[out_idx] = sqlite3_value_int64(val);
+					stmt.CheckTypeMatches(bind_data, sqlite_column_type, SQLITE_INTEGER, col_idx);
+					FlatVector::GetDataMutable<int64_t>(out_vec)[out_idx] = sqlite3_column_int64(raw, col);
 					break;
 				case LogicalTypeId::DOUBLE:
-					stmt.CheckTypeIsFloatOrInteger(val, sqlite_column_type, col_idx);
-					FlatVector::GetDataMutable<double>(out_vec)[out_idx] = sqlite3_value_double(val);
+					stmt.CheckTypeIsFloatOrInteger(sqlite_column_type, col_idx);
+					FlatVector::GetDataMutable<double>(out_vec)[out_idx] = sqlite3_column_double(raw, col);
 					break;
 				case LogicalTypeId::VARCHAR:
-					stmt.CheckTypeMatches(bind_data, val, sqlite_column_type, SQLITE_TEXT, col_idx);
+					stmt.CheckTypeMatches(bind_data, sqlite_column_type, SQLITE_TEXT, col_idx);
 					FlatVector::GetDataMutable<string_t>(out_vec)[out_idx] = StringVector::AddString(
-					    out_vec, (const char *)sqlite3_value_text(val), sqlite3_value_bytes(val));
+					    out_vec, (const char *)sqlite3_column_text(raw, col), sqlite3_column_bytes(raw, col));
 					break;
 				case LogicalTypeId::DATE:
 					if (sqlite_column_type == SQLITE_INTEGER) {
 						// unix timestamp
 						FlatVector::GetDataMutable<date_t>(out_vec)[out_idx] =
-						    Timestamp::GetDate(ConvertTimestampInteger(val));
+						    Timestamp::GetDate(ConvertTimestampInteger(raw, col));
 					} else if (sqlite_column_type == SQLITE_FLOAT) {
-						FlatVector::GetDataMutable<date_t>(out_vec)[out_idx] = Timestamp::GetDate(ConvertTimestampFloat(val));
+						FlatVector::GetDataMutable<date_t>(out_vec)[out_idx] = Timestamp::GetDate(ConvertTimestampFloat(raw, col));
 					} else if (sqlite_column_type == SQLITE_TEXT) {
 						FlatVector::GetDataMutable<date_t>(out_vec)[out_idx] =
-						    Date::FromCString((const char *)sqlite3_value_text(val), sqlite3_value_bytes(val));
+						    Date::FromCString((const char *)sqlite3_column_text(raw, col), sqlite3_column_bytes(raw, col));
 					} else {
 						throw NotImplementedException("Unimplemented SQLite type for column of type DATE\n* SET "
 						                              "sqlite_all_varchar=true to "
@@ -434,13 +481,13 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 					// timestamps
 					if (sqlite_column_type == SQLITE_INTEGER) {
 						// unix timestamp
-						FlatVector::GetDataMutable<timestamp_t>(out_vec)[out_idx] = ConvertTimestampInteger(val);
+						FlatVector::GetDataMutable<timestamp_t>(out_vec)[out_idx] = ConvertTimestampInteger(raw, col);
 					} else if (sqlite_column_type == SQLITE_FLOAT) {
-						FlatVector::GetDataMutable<timestamp_t>(out_vec)[out_idx] = ConvertTimestampFloat(val);
+						FlatVector::GetDataMutable<timestamp_t>(out_vec)[out_idx] = ConvertTimestampFloat(raw, col);
 					} else if (sqlite_column_type == SQLITE_TEXT) {
 						// ISO-8601
 						FlatVector::GetDataMutable<timestamp_t>(out_vec)[out_idx] =
-						    Timestamp::FromCString((const char *)sqlite3_value_text(val), sqlite3_value_bytes(val));
+						    Timestamp::FromCString((const char *)sqlite3_column_text(raw, col), sqlite3_column_bytes(raw, col));
 					} else {
 						throw NotImplementedException("Unimplemented SQLite type for column of type TIMESTAMP\n* SET "
 						                              "sqlite_all_varchar=true to "
@@ -449,7 +496,7 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 					break;
 				case LogicalTypeId::BLOB:
 					FlatVector::GetDataMutable<string_t>(out_vec)[out_idx] = StringVector::AddStringOrBlob(
-					    out_vec, (const char *)sqlite3_value_blob(val), sqlite3_value_bytes(val));
+					    out_vec, (const char *)sqlite3_column_blob(raw, col), sqlite3_column_bytes(raw, col));
 					break;
 				default:
 					throw std::runtime_error(out_vec.GetType().ToString());
@@ -457,6 +504,7 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 			}
 			out_idx++;
 		}
+		SqliteApplyFilters(state, output);
 	}
 }
 

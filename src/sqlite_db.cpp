@@ -1,5 +1,6 @@
 #include "duckdb/parser/constraints/not_null_constraint.hpp"
 #include "duckdb/parser/constraints/unique_constraint.hpp"
+#include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/storage/table_storage_info.hpp"
 #include "duckdb/parser/column_list.hpp"
@@ -134,8 +135,15 @@ SQLiteDB SQLiteDB::OpenLocal(const string &path, const SQLiteOpenOptions &option
 
 	ApplyBusyTimeout(result.db, options);
 
+	// Both values were validated against SQLite's keyword lists when the option was parsed, so they
+	// can be spliced into the PRAGMA as bare keywords.
 	if (!options.journal_mode.empty()) {
-		result.Execute("PRAGMA journal_mode=" + SQLiteUtils::EscapeQuotes(options.journal_mode, '\''));
+		result.Execute("PRAGMA journal_mode=" + options.journal_mode);
+	}
+	if (!options.synchronous.empty()) {
+		// synchronous is a per-connection setting (unlike journal_mode, which is persistent in WAL
+		// mode), so it has to be applied to every handle we open
+		result.Execute("PRAGMA synchronous=" + options.synchronous);
 	}
 	return result;
 }
@@ -304,14 +312,47 @@ void SQLiteDB::GetViewInfo(const string &view_name, string &sql) {
 	throw InternalException("GetViewInfo - view \"%s\" not found", view_name);
 }
 
+//! SQLite treats an identifier in a DEFAULT clause (e.g. DEFAULT "" or DEFAULT abc) as a string literal
+static unique_ptr<ParsedExpression> SQLiteStringDefault(const string &str, const LogicalType &column_type) {
+	Value value(str);
+	if (!value.DefaultTryCastAs(column_type)) {
+		// e.g. DEFAULT "" in an INTEGER column, SQLite stores the string as is - keep the column without a default
+		return nullptr;
+	}
+	return ConstantExpression::FromValue(value);
+}
+
+static unique_ptr<ParsedExpression> ParseSQLiteDefault(const string &default_value, const LogicalType &column_type) {
+	if (default_value == "\"\"") {
+		// the DuckDB parser does not accept zero-length delimited identifiers
+		return SQLiteStringDefault(string(), column_type);
+	}
+	auto expressions = Parser::GetBuiltinParser().ParseExpressionList(default_value);
+	if (expressions.empty()) {
+		throw InternalException("Expression list is empty");
+	}
+	auto &expr = expressions[0];
+	if (expr->GetExpressionClass() == ExpressionClass::COLUMN_REF) {
+		auto &column_ref = expr->Cast<ColumnRefExpression>();
+		if (!column_ref.IsQualified()) {
+			return SQLiteStringDefault(column_ref.GetColumnName().GetIdentifierName(), column_type);
+		}
+	}
+	return std::move(expr);
+}
+
 void SQLiteDB::GetTableInfo(const string &table_name, ColumnList &columns, vector<unique_ptr<Constraint>> &constraints,
-                            bool all_varchar) {
+                            bool all_varchar, vector<bool> &utf8_text_affinity) {
 	SQLiteStatement stmt;
 
 	idx_t primary_key_index = idx_t(-1);
 	vector<Identifier> primary_keys;
 
 	bool found = false;
+	utf8_text_affinity.clear();
+
+	stmt = Prepare("PRAGMA encoding");
+	bool utf8 = stmt.Step() && stmt.GetValue<string>(0) == "UTF-8";
 
 	stmt = Prepare(StringUtil::Format("PRAGMA table_info('%s')", SQLiteUtils::SanitizeString(table_name)));
 	while (stmt.Step()) {
@@ -323,18 +364,18 @@ void SQLiteDB::GetTableInfo(const string &table_name, ColumnList &columns, vecto
 		auto pk = stmt.GetValue<int>(5);
 		StringUtil::Trim(sqlite_type);
 		auto column_type = all_varchar ? LogicalType::VARCHAR : SQLiteUtils::TypeToLogicalType(sqlite_type);
+		utf8_text_affinity.push_back(utf8 && SQLiteUtils::HasTextAffinity(sqlite_type));
 
 		if (pk) {
 			primary_key_index = cid;
 			primary_keys.emplace_back(sqlite_colname);
 		}
 		ColumnDefinition column(Identifier(std::move(sqlite_colname)), std::move(column_type));
-		if (!default_value.empty() && default_value != "\"\"") {
-			auto expressions = Parser::GetBuiltinParser().ParseExpressionList(default_value);
-			if (expressions.empty()) {
-				throw InternalException("Expression list is empty");
+		if (!default_value.empty()) {
+			auto default_expr = ParseSQLiteDefault(default_value, column.Type());
+			if (default_expr) {
+				column.SetDefaultValue(std::move(default_expr));
 			}
-			column.SetDefaultValue(std::move(expressions[0]));
 		}
 		columns.AddColumn(std::move(column));
 		if (not_null) {
@@ -382,11 +423,48 @@ bool SQLiteDB::TransactionReadLockBlocksWriters() {
 	return !StringUtil::CIEquals(mode_stmt.GetValue<string>(0), "wal");
 }
 
-bool SQLiteDB::GetRowIdInfo(const string &table_name, RowIdInfo &row_id_info) {
+bool SQLiteDB::TryGetRowIdName(const string &table_name, string &rowid_name) {
+	// table_xinfo also lists generated columns, which hide the row id names as well
+	vector<string> column_names;
+	SQLiteStatement stmt;
+	stmt = Prepare(StringUtil::Format("PRAGMA table_xinfo(\"%s\")", SQLiteUtils::SanitizeIdentifier(table_name)));
+	while (stmt.Step()) {
+		column_names.push_back(stmt.GetValue<string>(1));
+	}
+	for (auto candidate : {"rowid", "_rowid_", "oid"}) {
+		bool hidden = false;
+		for (auto &column_name : column_names) {
+			if (StringUtil::CIEquals(column_name, candidate)) {
+				hidden = true;
+				break;
+			}
+		}
+		if (!hidden) {
+			rowid_name = candidate;
+			return true;
+		}
+	}
+	return false;
+}
+
+string SQLiteDB::GetRowIdName(const string &table_name) {
+	string rowid_name;
+	if (!TryGetRowIdName(table_name, rowid_name)) {
+		throw BinderException("Cannot address the rows of SQLite table \"%s\": columns named rowid, _rowid_ and oid "
+		                      "hide its row id",
+		                      table_name);
+	}
+	return rowid_name;
+}
+
+bool SQLiteDB::GetRowIdInfo(const string &table_name, const string &rowid_name, RowIdInfo &row_id_info) {
+	if (rowid_name.empty()) {
+		return false;
+	}
 	SQLiteStatement stmt;
 	auto sanitized_table_name = SQLiteUtils::SanitizeIdentifier(table_name);
-	if (!TryPrepare(StringUtil::Format("SELECT (SELECT MIN(ROWID) FROM \"%s\"), (SELECT MAX(ROWID) FROM \"%s\")",
-	                                   sanitized_table_name, sanitized_table_name),
+	if (!TryPrepare(StringUtil::Format("SELECT (SELECT MIN(%s) FROM \"%s\"), (SELECT MAX(%s) FROM \"%s\")", rowid_name,
+	                                   sanitized_table_name, rowid_name, sanitized_table_name),
 	                stmt)) {
 		return false;
 	}
