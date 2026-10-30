@@ -322,6 +322,20 @@ static unique_ptr<ParsedExpression> SQLiteStringDefault(const string &str, const
 	return ConstantExpression::FromValue(value);
 }
 
+//! CURRENT_TIMESTAMP, CURRENT_DATE and CURRENT_TIME are keywords in a SQLite DEFAULT clause, unless they are quoted
+static bool IsSQLiteTimeDefault(const Identifier &name, const string &default_value) {
+	if (!(name == "current_timestamp" || name == "current_date" || name == "current_time")) {
+		return false;
+	}
+	for (auto &token : Parser::Tokenize(default_value)) {
+		auto first = default_value[token.start];
+		if (token.type != SimplifiedTokenType::SIMPLIFIED_TOKEN_COMMENT && (first == '"' || first == '`')) {
+			return false;
+		}
+	}
+	return true;
+}
+
 static unique_ptr<ParsedExpression> ParseSQLiteDefault(const string &default_value, const LogicalType &column_type) {
 	if (default_value == "\"\"") {
 		// the DuckDB parser does not accept zero-length delimited identifiers
@@ -334,8 +348,9 @@ static unique_ptr<ParsedExpression> ParseSQLiteDefault(const string &default_val
 	auto &expr = expressions[0];
 	if (expr->GetExpressionClass() == ExpressionClass::COLUMN_REF) {
 		auto &column_ref = expr->Cast<ColumnRefExpression>();
-		if (!column_ref.IsQualified()) {
-			return SQLiteStringDefault(column_ref.GetColumnName().GetIdentifierName(), column_type);
+		auto &name = column_ref.GetColumnName();
+		if (!column_ref.IsQualified() && !IsSQLiteTimeDefault(name, default_value)) {
+			return SQLiteStringDefault(name.GetIdentifierName(), column_type);
 		}
 	}
 	return std::move(expr);
