@@ -60,6 +60,8 @@ public:
 	//! Gets the min and max row id of a table, returns false if the table does not have a
 	//! rowid column or the row ids are not suitable for a parallel scan
 	bool GetRowIdInfo(const string &table_name, const string &rowid_name, RowIdInfo &info);
+	//! Takes the read lock of the open transaction, and returns whether it keeps other connections from committing
+	bool TransactionReadLockBlocksWriters();
 	bool ColumnExists(const string &table_name, const string &column_name);
 	vector<IndexInfo> GetIndexInfo(const string &table_name);
 

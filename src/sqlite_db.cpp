@@ -408,6 +408,21 @@ bool SQLiteDB::ColumnExists(const string &table_name, const string &column_name)
 	return false;
 }
 
+bool SQLiteDB::TransactionReadLockBlocksWriters() {
+	SQLiteStatement stmt;
+	// the first read of a transaction takes a shared lock that it keeps until it ends
+	if (!TryPrepare("SELECT 1 FROM sqlite_master LIMIT 1", stmt)) {
+		return false;
+	}
+	stmt.Step();
+	// in WAL mode writers commit while a transaction reads
+	SQLiteStatement mode_stmt;
+	if (!TryPrepare("PRAGMA journal_mode", mode_stmt) || !mode_stmt.Step()) {
+		return false;
+	}
+	return !StringUtil::CIEquals(mode_stmt.GetValue<string>(0), "wal");
+}
+
 bool SQLiteDB::TryGetRowIdName(const string &table_name, string &rowid_name) {
 	// table_xinfo also lists generated columns, which hide the row id names as well
 	vector<string> column_names;
