@@ -141,7 +141,7 @@ static bool SqlitePrepareStatement(const SqliteBindData &bind_data, SqliteLocalS
 			    !bind_data.transaction_catalog_name.empty() && local_state.db == &local_state.owned_db) {
 				return false;
 			}
-			throw std::runtime_error("Failed to prepare query \"" + sql + "\": " + string(sqlite3_errmsg(stmt.db)));
+			throw std::runtime_error("Failed to prepare query: " + string(sqlite3_errmsg(stmt.db)));
 		}
 		local_state.stmt = std::move(stmt);
 		local_state.stmt_sql = sql;
