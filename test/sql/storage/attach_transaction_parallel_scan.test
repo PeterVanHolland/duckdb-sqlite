@@ -1,0 +1,148 @@
+# name: test/sql/storage/attach_transaction_parallel_scan.test
+# description: Parallel scans in a transaction of a rollback journal database read the snapshot of the transaction
+# group: [storage]
+
+require sqlite_scanner
+
+statement ok
+SET threads = 4
+
+statement ok
+ATTACH '{TEST_DIR}/attach_transaction_parallel_scan.db' AS s (TYPE SQLITE, BUSY_TIMEOUT 100)
+
+statement ok
+CREATE TABLE s.big AS SELECT range AS i, 0 AS v FROM range(500000)
+
+statement ok con1
+BEGIN
+
+query II con1
+SELECT count(*), sum(v) FROM s.big
+----
+500000	0
+
+# the read lock of the transaction keeps writers from committing
+statement error con2
+UPDATE s.big SET v = 1 WHERE i = 400000
+----
+database is locked
+
+query II con1
+SELECT count(*), sum(v) FROM s.big WHERE i >= 250000
+----
+250000	0
+
+statement ok con1
+COMMIT
+
+statement ok con2
+UPDATE s.big SET v = 1 WHERE i = 400000
+
+query I con1
+SELECT sum(v) FROM s.big
+----
+1
+
+# a transaction that wrote reads its own changes through its connection
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE s.big SET v = 2 WHERE i = 100
+
+query I con1
+SELECT sum(v) FROM s.big
+----
+3
+
+statement ok con1
+ROLLBACK
+
+query I con1
+SELECT sum(v) FROM s.big
+----
+1
+
+# a statement that writes reads through the transaction's connection
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE s.big SET v = v + 1 WHERE i < 300000
+
+query I con1
+SELECT sum(v) FROM s.big
+----
+300001
+
+statement ok con1
+ROLLBACK
+
+# a statement that writes the table it scans reads the rows it had when it was bound
+statement ok con1
+BEGIN
+
+statement ok con1
+INSERT INTO s.big SELECT i + 1000000, 1 FROM s.big
+
+query II con1
+SELECT count(*), sum(v) FROM s.big
+----
+1000000	500001
+
+statement ok con1
+ROLLBACK
+
+# sqlite_query can change the transaction without DuckDB knowing, later scans read through the transaction's connection
+statement ok con1
+BEGIN
+
+query I con1
+FROM sqlite_query('s', 'UPDATE big SET v = 42 WHERE i = 1')
+----
+1
+
+query I con1
+SELECT sum(v) FROM s.big
+----
+43
+
+statement ok con1
+ROLLBACK
+
+query I con1
+SELECT sum(v) FROM s.big
+----
+1
+
+# a sqlite_query prepared before the transaction marks the transaction that executes it
+statement ok con1
+PREPARE set_v AS FROM sqlite_query('s', 'UPDATE big SET v = 42 WHERE i = 1')
+
+statement ok con1
+BEGIN
+
+query I con1
+EXECUTE set_v
+----
+1
+
+query I con1
+SELECT sum(v) FROM s.big
+----
+43
+
+statement ok con1
+ROLLBACK
+
+# a scan bound before a sqlite_query of the same statement reads through the transaction's connection
+statement ok con1
+BEGIN
+
+query I con1
+SELECT sum(v) FROM s.big CROSS JOIN sqlite_query('s', 'UPDATE big SET v = 42 WHERE i = 1')
+----
+43
+
+statement ok con1
+ROLLBACK

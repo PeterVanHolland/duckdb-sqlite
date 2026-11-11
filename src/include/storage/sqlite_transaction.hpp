@@ -42,6 +42,14 @@ public:
 
 	static SQLiteTransaction &Get(ClientContext &context, Catalog &catalog);
 
+	//! Statements of sqlite_query can change what the connection reads without DuckDB knowing
+	void SetRanQuery() {
+		ran_query = true;
+	}
+	bool RanQuery() const {
+		return ran_query;
+	}
+
 private:
 	SQLiteCatalog &sqlite_catalog;
 	SQLiteDB *db = nullptr;
@@ -57,6 +65,7 @@ private:
 	mutex init_lock;
 	atomic<bool> initialized {false};
 	bool started = false;
+	atomic<bool> ran_query {false};
 };
 
 } // namespace duckdb

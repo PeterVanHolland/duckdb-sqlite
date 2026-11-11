@@ -144,6 +144,7 @@ static unique_ptr<FunctionData> SQLiteQueryBind(ClientContext &context, TableFun
 	result->clear_catalog_cache = SQLiteQueryFlag(input, "clear_catalog_cache");
 
 	auto &con = transaction.GetDB();
+	transaction.SetRanQuery();
 	bool suppress_output = SQLiteQueryFlag(input, "suppress_output");
 	// whether the statement writes to the database - statements without a result are assumed to write
 	bool modifies_database = SQLiteQueryFlag(input, "modifies_database") || !result->preliminary_queries.empty();
