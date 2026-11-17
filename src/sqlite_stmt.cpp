@@ -38,6 +38,25 @@ int SQLiteStatement::Step() {
 	}
 	throw std::runtime_error(string(sqlite3_errmsg(db)));
 }
+bool SQLiteStatement::TryStep(bool &has_row) {
+	D_ASSERT(db);
+	D_ASSERT(stmt);
+	auto rc = sqlite3_step(stmt);
+	if (rc == SQLITE_ROW || rc == SQLITE_DONE) {
+		has_row = rc == SQLITE_ROW;
+		return true;
+	}
+	if (IsLockedOut(rc)) {
+		return false;
+	}
+	throw std::runtime_error(string(sqlite3_errmsg(db)));
+}
+
+bool SQLiteStatement::IsLockedOut(int rc) {
+	// a read only connection cannot roll back the hot journal of a writer that crashed
+	return (rc & 0xFF) == SQLITE_BUSY || rc == SQLITE_READONLY_ROLLBACK || rc == SQLITE_READONLY_RECOVERY;
+}
+
 int SQLiteStatement::GetType(idx_t col) {
 	D_ASSERT(stmt);
 	return sqlite3_column_type(stmt, col);
